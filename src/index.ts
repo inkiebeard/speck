@@ -19,6 +19,7 @@ export * from './ai/flocking';
 
 // Rendering (peer dep: three)
 export * from './rendering/instanced-renderer';
+export * from './rendering/particle-system';
 
 // Physics (peer dep: @dimforge/rapier3d-compat)
 export * from './physics/physics-system';

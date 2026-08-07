@@ -31,6 +31,31 @@ Three layers:
    - `InstancedRenderer` — one `InstancedMesh` per visual type = one draw call per
      type. Also records instanceId → entity each frame so raycast picking resolves
      back to an entity (needed for drag-picking).
+   - `ParticleSystem` — a basic particle burst effect, deliberately *not*
+     entity-based: at the count and churn a particle burst implies (spawn
+     dozens at once, dead within a second), the per-particle overhead a full
+     `Entity`/`TransformStore` row buys you — stable identity, picking,
+     component composition — is pure waste, since nothing ever looks a
+     particle up by handle. One flat pool of typed arrays (position,
+     velocity, life, color, alpha), rendered as a single `THREE.Points` — the
+     same SoA call `TransformStore` makes, without the identity layer this
+     doesn't need. `emit()` spawns (silently dropped past `capacity` — a
+     fixed pool, not a growable queue); `update(dt)` integrates, fades alpha
+     toward 0 over remaining life, and reaps dead particles via swap-remove
+     so the live set stays packed at the front. Not driven by `World`/`step()`
+     — call `update(dt)` yourself.
+
+     Rendered with a small custom `ShaderMaterial` rather than stock
+     `PointsMaterial`, specifically so the fade can be a real per-vertex
+     alpha rather than darkening toward black — `PointsMaterial`'s
+     `vertexColors` only ever reads RGB, with no per-particle alpha
+     equivalent. Geometry attributes bind to shader `attribute`s by name
+     automatically, so wiring up the custom `alpha` attribute is one
+     declaration in the vertex shader; `vertexColors: true` on the material
+     still gets `attribute vec3 color` auto-declared the same way any
+     built-in material would. Circular, soft-edged points (one `discard` +
+     `smoothstep` in the fragment shader) instead of flat square sprites,
+     since that was nearly free once writing a shader anyway.
    - `PhysicsSystem` — wraps a Rapier world. Rapier owns simulation state; each tick
      it steps, then copies body transforms back into the SoA `TransformStore`.
      `removeBody(e)` removes the rigid body from Rapier — call it *before*
@@ -257,10 +282,16 @@ opening the example — it consumes `dist/`, not `src/`.
   over: both items rise, orbit each other while spiraling inward, and collide
   exactly at `t=1`, at which point `onComplete` despawns both (swap-remove
   keeps every store packed with zero holes), the top-center score counter
-  increments, and a short two-tone chime plays through `SoundSystem` — the
+  increments, a short two-tone chime plays through `SoundSystem` — the
   buffer is synthesized on the fly (`createChimeBuffer`: two sine waves summed
   under an exponential-decay envelope, rendered into an `AudioBuffer` once at
-  startup), so the cue needs no audio asset or CDN fetch.
+  startup), so the cue needs no audio asset or CDN fetch — and a 32-particle,
+  spherical confetti burst fires from `ParticleSystem` at the collision point
+  — raised to where the rise animation actually tops out
+  (`mid.y + MATCH_RISE_HEIGHT`), not the ground-level midpoint captured
+  before the animation ran — tinted with the matched type's own color
+  (reusing the position/type already looked
+  up for the animation and the sound).
 - `physics.drainContactForces()` is called once per fixed physics step. Two
   gates before a short, quiet "tock" (`createNudgeBuffer`, distinct from the
   chime on purpose) plays: `magnitude >= SERIOUS_IMPACT_FORCE` (80 — well
@@ -300,14 +331,14 @@ opening the example — it consumes `dist/`, not `src/`.
 
 **Implemented:** generational-handle ECS core with stable external ids
 (`idOf`/`entityOf`) for tooling; bounded, deterministic event cascades;
-instanced rendering with raycast picking; a Rapier adapter with static
-boundaries (`addStaticGround`/`addStaticBox`) and explicit body cleanup
-(`removeBody`); a uniform spatial hash grid for neighbor queries;
-override-first AI boilerplate (behavior trees, `AiState`/`createAiSystem`,
-separation+cohesion flocking); a debug overlay; short timed animations
-(`TweenRunner`); a fixed-timestep loop (`FixedStep`) decoupling simulation
-from render rate; a minimal sound wrapper (`SoundSystem`) over
-`THREE.Audio`/`AudioListener`.
+instanced rendering with raycast picking; a non-entity-based particle burst
+effect (`ParticleSystem`); a Rapier adapter with static boundaries
+(`addStaticGround`/`addStaticBox`) and explicit body cleanup (`removeBody`);
+a uniform spatial hash grid for neighbor queries; override-first AI
+boilerplate (behavior trees, `AiState`/`createAiSystem`, separation+cohesion
+flocking); a debug overlay; short timed animations (`TweenRunner`); a
+fixed-timestep loop (`FixedStep`) decoupling simulation from render rate; a
+minimal sound wrapper (`SoundSystem`) over `THREE.Audio`/`AudioListener`.
 
 **Roadmap:**
 - **Render interpolation.** `FixedStep.alpha` is exposed but unused — blend

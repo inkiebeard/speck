@@ -28,6 +28,7 @@ import {
   TweenRunner,
   FixedStep,
   SoundSystem,
+  ParticleSystem,
 } from '../dist/speck.js';
 
 /** Synthesizes a short two-tone chime, so the match cue needs no audio asset
@@ -117,6 +118,11 @@ async function main() {
     renderer.registerType(t, geo, new THREE.MeshStandardMaterial({ color: palette[t] }), ITEM_COUNT);
   }
 
+  // A light, floaty gravity (not the arena's -20) reads better for a
+  // celebratory confetti-burst than realistic falling debris would.
+  const particles = new ParticleSystem(300, { size: 0.2, gravity: { x: 0, y: -4, z: 0 }, damping: 0.5 });
+  scene.add(particles.points);
+
   // Steeper than real gravity (-9.81): with linear damping on every dynamic
   // body (added for pile stability, see addDynamicBox), drag opposes fall
   // speed too, so real-world gravity read as floaty. -20 makes the fall feel
@@ -168,9 +174,11 @@ async function main() {
   const MATCH_ORBIT_TURNS = 1.5;
   const MATCH_RISE_HEIGHT = 1.5;
   const MATCH_MIN_RADIUS = 0.8;
+  const MATCH_BURST_COUNT = 128;
 
   world.events.on('match:attempt', (ev, w) => {
     if (types.get(ev.a) !== types.get(ev.b)) return;
+    const burstColor = new THREE.Color(palette[types.get(ev.a)]);
 
     // Detach physics *now*, not at despawn — despawn doesn't run until the
     // animation completes below, and PhysicsSystem.update() would otherwise
@@ -213,6 +221,28 @@ async function main() {
         // outranks lower-priority ambient/incidental cues for a voice slot if
         // this example ever adds any.
         sound.play(matchChime, { volume: 0.5, priority: 1 });
+
+        // A confetti burst at the collision point, tinted with the matched
+        // type's own color. `mid` is the *ground-level* midpoint captured
+        // before the animation ran — the actual collision happens up at
+        // mid.y + MATCH_RISE_HEIGHT, where the rise animation tops out, so
+        // the burst originates there instead, not down at the pile.
+        const burstOrigin = { x: mid.x, y: mid.y + MATCH_RISE_HEIGHT, z: mid.z };
+        for (let i = 0; i < MATCH_BURST_COUNT; i++) {
+          // Uniform direction over the full sphere (azimuthal angle uniform,
+          // polar angle via acos(2u-1)) rather than a flat ring with a fixed
+          // upward bias — a real burst scatters every which way, not just
+          // up-and-out like a fountain.
+          const theta = Math.random() * Math.PI * 2;
+          const phi = Math.acos(2 * Math.random() - 1);
+          const speed = 2 + Math.random() * 3;
+          const velocity = {
+            x: Math.sin(phi) * Math.cos(theta) * speed,
+            y: Math.cos(phi) * speed,
+            z: Math.sin(phi) * Math.sin(theta) * speed,
+          };
+          particles.emit(burstOrigin, velocity, 0.5 + Math.random() * 0.3, burstColor);
+        }
       },
     });
   });
@@ -365,7 +395,8 @@ async function main() {
 
     fixedStep.advance(dt, (fixedDt) => {
       physics.update(transforms, fixedDt); // step sim + copy transforms back
-      world.step(fixedDt); // logic systems, event drain, tweens
+      world.step(fixedDt); // logic systems, event drain, tweens (may emit particles via match onComplete)
+      particles.update(fixedDt); // after world.step, so particles emitted this step get their first tick now, not next frame
 
       // Contact-force events (not just collision-start): drained once per
       // physics step (not once per rendered frame — several steps can run in
