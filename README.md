@@ -1,4 +1,4 @@
-# speck
+# SPECK
 
 A tiny, data-oriented game engine layered on top of Three.js. Built to keep
 ~10k lightweight entities on screen at once.
@@ -7,8 +7,6 @@ Three.js and Rapier are **peer dependencies**, not bundled. The lib side-loads
 alongside them.
 
 ## Architecture
-
-Three layers:
 
 1. **ECS core** — entities are generational integer handles (`Entity`). Component
    data lives in packed arrays addressed through a `SparseSet`, giving dense,
@@ -235,7 +233,7 @@ npm run example     # builds, then serves the repo root statically
 
 Then open `http://localhost:<port>/examples/matching-game.html`.
 
-## The matching game (see `examples/matching-game.js`)
+## The matching game demo (see `examples/matching-game.js`)
 
 Runs `dist/speck.js` straight in the browser, no bundler: three and rapier are
 resolved to CDN URLs *inside* the built bundle (see `output.paths` in
