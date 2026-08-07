@@ -2,6 +2,7 @@
   "name": "speck",
   "version": "0.0.1",
   "description": "A tiny data-oriented game engine on top of Three.js",
+  "license": "MIT",
   "type": "module",
   "main": "./dist/speck.js",
   "module": "./dist/speck.js",

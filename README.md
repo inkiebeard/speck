@@ -356,3 +356,7 @@ minimal sound wrapper (`SoundSystem`) over `THREE.Audio`/`AudioListener`.
 - **Same-tick vs next-tick cascades.** `EventQueue.drain()` currently resolves
   cascades within the tick (bounded by `maxPasses`); revisit if that turns out
   to be the wrong default for a given project.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
