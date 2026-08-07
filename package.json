@@ -1,0 +1,39 @@
+{
+  "name": "speck",
+  "version": "0.0.1",
+  "description": "A tiny data-oriented game engine on top of Three.js",
+  "type": "module",
+  "main": "./dist/speck.js",
+  "module": "./dist/speck.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/speck.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "author":{
+    "email": "aaron@inkiebeard.codes",
+    "name": "Aaron Toomey",
+    "url": "https://inkiebeard.codes"
+  },
+  "scripts": {
+    "build": "tsc --emitDeclarationOnly && vite build",
+    "typecheck": "tsc --noEmit",
+    "example": "npm run build && npx --yes serve ."
+  },
+  "peerDependencies": {
+    "@dimforge/rapier3d-compat": ">=0.14.0",
+    "three": ">=0.160.0"
+  },
+  "devDependencies": {
+    "@dimforge/rapier3d-compat": "^0.14.0",
+    "@types/three": "^0.160.0",
+    "three": "^0.160.1",
+    "typescript": "^5.9.3",
+    "vite": "^8.2.1"
+  }
+}
