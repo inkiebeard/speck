@@ -21,7 +21,7 @@
     "url": "https://inkiebeard.codes"
   },
   "scripts": {
-    "build": "tsc --emitDeclarationOnly && vite build",
+    "build": "tsc --emitDeclarationOnly && vite build && node scripts/write-speck-dts.mjs",
     "typecheck": "tsc --noEmit",
     "example": "npm run build && npx --yes serve ."
   },
