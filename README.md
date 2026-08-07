@@ -1,3 +1,5 @@
+<img src="logo.png" width="128" alt="speck logo" />
+
 # SPECK
 
 A tiny, data-oriented game engine layered on top of Three.js. Built to keep
