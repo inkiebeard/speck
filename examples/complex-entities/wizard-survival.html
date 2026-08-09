@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>speck — wizard survival</title>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #05050a; }
+      canvas { display: block; }
+    </style>
+  </head>
+  <body>
+    <!-- The engine's GltfLoader pulls in three/examples/jsm/loaders/GLTFLoader.js
+         from the CDN, which itself does a bare `import * as THREE from "three"`
+         internally — the browser needs this map to resolve that. Points at the
+         same URL wizard-survival.js imports directly, so both resolve to one
+         module instance. -->
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.160.1/build/three.module.js"
+        }
+      }
+    </script>
+    <script type="module" src="./wizard-survival.js"></script>
+  </body>
+</html>
