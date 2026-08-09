@@ -8,6 +8,24 @@ A tiny, data-oriented game engine layered on top of Three.js. Built to keep
 Three.js and Rapier are **peer dependencies**, not bundled. The lib side-loads
 alongside them.
 
+## Module docs
+
+This README covers architecture — what each piece *is* and how they fit
+together. Each `src/` subdirectory has its own short `README.md` alongside
+the code for the practical layer this one doesn't: best practices,
+trade-offs, and gotchas specific to that part of the stack.
+
+| Directory | Covers |
+| --- | --- |
+| [`src/core/`](src/core/README.md) | ECS core, `World`, `EventQueue`, `SpatialGrid`, `FixedStep`, `TweenRunner`, `Preloader` |
+| [`src/components/`](src/components/README.md) | `TransformStore` |
+| [`src/physics/`](src/physics/README.md) | `PhysicsSystem` (Rapier adapter) |
+| [`src/rendering/`](src/rendering/README.md) | `InstancedRenderer`, `ParticleSystem`, `GltfLoader` |
+| [`src/audio/`](src/audio/README.md) | `SoundSystem` |
+| [`src/input/`](src/input/README.md) | `InputBuffer` |
+| [`src/ai/`](src/ai/README.md) | Behavior trees, `AiState`/`createAiSystem`, flocking |
+| [`src/debug/`](src/debug/README.md) | `DebugOverlay` |
+
 ## Architecture
 
 1. **ECS core** — entities are generational integer handles (`Entity`). Component
