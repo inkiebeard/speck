@@ -71,6 +71,14 @@ export class ArrayComponentStore<T> implements ComponentStore<T> {
     return this.set.dense;
   }
 
+  /** Every component value, in the same dense order as `entities` (i.e.
+   *  `values[i]` is `entities[i]`'s component) — for a hot loop that wants to
+   *  walk every entity+component pair without re-deriving each entity's slot
+   *  via `get()`, which `entities`/`values` already share by construction. */
+  get values(): readonly T[] {
+    return this.data;
+  }
+
   /** Number of entities with this component. */
   get size(): number {
     return this.set.size;

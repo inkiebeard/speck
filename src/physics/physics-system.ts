@@ -10,6 +10,30 @@ export interface BodyHandle {
 }
 
 /**
+ * Which event channels a collider should report — both default `true`
+ * (matching Rapier's own event cost being opt-in per collider, but every
+ * `add*` here turning both on unconditionally until this option existed).
+ * Each channel Rapier tracks isn't free: `collisions` costs it start/stop
+ * bookkeeping on every touching pair every step, `contactForces` costs it a
+ * force sum + threshold check per contact every step — both keep being paid
+ * every step for every contact regardless of whether anything ever reads
+ * them. Turn off whichever channel a caller's `drainCollisions`/
+ * `drainContactForces` usage doesn't actually drain — cheap in isolation,
+ * but adds up across thousands of resting contacts in a settled pile.
+ */
+export interface ColliderEvents {
+  collisions?: boolean;
+  contactForces?: boolean;
+}
+
+function activeEvents(events: ColliderEvents | undefined): RAPIER.ActiveEvents {
+  let flags = 0;
+  if (events?.collisions ?? true) flags |= RAPIER.ActiveEvents.COLLISION_EVENTS;
+  if (events?.contactForces ?? true) flags |= RAPIER.ActiveEvents.CONTACT_FORCE_EVENTS;
+  return flags;
+}
+
+/**
  * Wraps a Rapier world. The RigidBody component is just a handle into Rapier
  * (an ArrayComponentStore<BodyHandle>) — Rapier owns the simulation state, we
  * own the presentation state. Each tick: step Rapier, then copy every body's
@@ -69,6 +93,7 @@ export class PhysicsSystem {
     half: { x: number; y: number; z: number } = { x: 0.5, y: 0.5, z: 0.5 },
     damping: { linear: number; angular: number } = { linear: 0.4, angular: 0.6 },
     contactForceThreshold = 40,
+    events?: ColliderEvents,
   ): void {
     const slot = transforms.slotOf(e);
     const raw = transforms.raw;
@@ -80,7 +105,7 @@ export class PhysicsSystem {
       .setAngularDamping(damping.angular);
     const body = this.world.createRigidBody(desc);
     const colliderDesc = RAPIER.ColliderDesc.cuboid(half.x, half.y, half.z)
-      .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS | RAPIER.ActiveEvents.CONTACT_FORCE_EVENTS)
+      .setActiveEvents(activeEvents(events))
       .setContactForceEventThreshold(contactForceThreshold);
     const collider = this.world.createCollider(colliderDesc, body);
     this.bodies.add(e, { body, collider });
@@ -93,10 +118,11 @@ export class PhysicsSystem {
     y = 0,
     halfExtents: { x: number; z: number } = { x: 50, z: 50 },
     contactForceThreshold = 40,
+    events?: ColliderEvents,
   ): void {
     const body = this.world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(0, y, 0));
     const desc = RAPIER.ColliderDesc.cuboid(halfExtents.x, 0.1, halfExtents.z)
-      .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS | RAPIER.ActiveEvents.CONTACT_FORCE_EVENTS)
+      .setActiveEvents(activeEvents(events))
       .setContactForceEventThreshold(contactForceThreshold);
     this.world.createCollider(desc, body);
   }
@@ -107,12 +133,13 @@ export class PhysicsSystem {
     position: { x: number; y: number; z: number },
     half: { x: number; y: number; z: number },
     contactForceThreshold = 40,
+    events?: ColliderEvents,
   ): void {
     const body = this.world.createRigidBody(
       RAPIER.RigidBodyDesc.fixed().setTranslation(position.x, position.y, position.z),
     );
     const desc = RAPIER.ColliderDesc.cuboid(half.x, half.y, half.z)
-      .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS | RAPIER.ActiveEvents.CONTACT_FORCE_EVENTS)
+      .setActiveEvents(activeEvents(events))
       .setContactForceEventThreshold(contactForceThreshold);
     this.world.createCollider(desc, body);
   }
@@ -145,19 +172,22 @@ export class PhysicsSystem {
     this.world.timestep = dt;
     this.world.step(this.events);
 
+    // `entities`/`values` are index-aligned by construction (ArrayComponentStore
+    // keeps its data array parallel to the same SparseSet dense order) — walking
+    // both in lockstep gets this tick's handle directly, rather than the
+    // `bodies.get(e)` this used to do, which re-derives the same slot from `e`
+    // through another sparse lookup this loop already has for free.
     const entities = this.bodies.entities;
+    const handles = this.bodies.values;
     const raw = transforms.raw;
     const stride = transforms.stride;
 
     for (let i = 0; i < entities.length; i++) {
-      const e = entities[i];
-      const handle = this.bodies.get(e);
-      if (handle === undefined) continue;
-      const slot = transforms.slotOf(e);
+      const slot = transforms.slotOf(entities[i]);
       if (slot === -1) continue;
 
-      const p = handle.body.translation();
-      const q = handle.body.rotation();
+      const p = handles[i].body.translation();
+      const q = handles[i].body.rotation();
       const o = slot * stride;
       raw[o] = p.x; raw[o + 1] = p.y; raw[o + 2] = p.z;
       raw[o + 3] = q.x; raw[o + 4] = q.y; raw[o + 5] = q.z; raw[o + 6] = q.w;

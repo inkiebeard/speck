@@ -8,6 +8,7 @@ export * from './core/spatial-grid';
 export * from './core/tween';
 export * from './core/fixed-step';
 export * from './core/world';
+export * from './core/preloader';
 
 // Components
 export * from './components/transform';
@@ -20,9 +21,13 @@ export * from './ai/flocking';
 // Rendering (peer dep: three)
 export * from './rendering/instanced-renderer';
 export * from './rendering/particle-system';
+export * from './rendering/gltf-loader';
 
 // Physics (peer dep: @dimforge/rapier3d-compat)
 export * from './physics/physics-system';
+
+// Input (browser-only, opt-in)
+export * from './input/input-buffer';
 
 // Debug (browser-only, opt-in)
 export * from './debug/debug-overlay';

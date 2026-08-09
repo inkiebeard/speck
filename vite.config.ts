@@ -8,6 +8,8 @@ import { resolve } from 'node:path';
 // URLs directly, so the browser's module cache resolves both to one instance.
 const CDN = {
   three: 'https://cdn.jsdelivr.net/npm/three@0.160.1/build/three.module.js',
+  'three/examples/jsm/loaders/GLTFLoader.js':
+    'https://cdn.jsdelivr.net/npm/three@0.160.1/examples/jsm/loaders/GLTFLoader.js',
   '@dimforge/rapier3d-compat':
     'https://cdn.jsdelivr.net/npm/@dimforge/rapier3d-compat@0.14.0/rapier.es.js',
 };

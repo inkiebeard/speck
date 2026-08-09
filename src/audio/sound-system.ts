@@ -16,8 +16,10 @@ export interface PlayOptions {
   volume?: number;
   /** Higher wins contention: voice stealing and queue draining both favor higher priority. Ties favor whichever was already active/queued first. Default 0. */
   priority?: number;
-  /** Identifies "the same sound" for dedup. A request sharing an `id` with something already playing *or* queued is dropped, not stacked. Omit to never dedup this cue. */
+  /** Identifies "the same sound" for dedup. A request sharing an `id` with `maxConcurrent` others already playing *or* queued is dropped, not stacked. Omit to never dedup this cue. */
   id?: string;
+  /** How many simultaneous instances sharing `id` are allowed (counting both playing and queued) before a new request is dropped as a dup. Default 1 — the same generic cue playing on top of itself rarely tells the player anything new. Raise this for a cue expected to legitimately overlap from multiple sources at once (e.g. several simultaneous impacts) while still capping it well under `maxVoices`, so it can't dominate every voice slot. No effect without `id`. */
+  maxConcurrent?: number;
   /** How long, in ms, from this `play()` call until the request is too stale to actually start — checked right before the sound would play, not just at intake, so it holds whether the request played instantly, waited in queue, or briefly lost/won a voice-steal. A cue that's aged out is no longer *about* anything current by the time it would sound. Default 200. */
   queueTTL?: number;
 }
@@ -56,8 +58,10 @@ interface PendingPlay {
  * landing in one tick) from summing past `[-1, 1]` into audible clipping —
  * a classic footgun that reads as "the audio breaks under load." `play()`
  * goes through admission control rather than straight to playback:
- *  - **Dedup.** A request sharing `id` with something already sounding *or*
- *    queued is dropped outright, not stacked.
+ *  - **Dedup.** A request sharing `id` with `maxConcurrent` (default 1)
+ *    others already sounding *or* queued is dropped outright, not stacked —
+ *    a cap, not always exactly one instance; raise `maxConcurrent` for a cue
+ *    expected to legitimately overlap from several sources at once.
  *  - **Priority.** At `maxVoices` capacity, a new request only plays by
  *    *stealing* the lowest-priority active voice, and only if it outranks
  *    it; otherwise it queues. Draining the queue (as voices free up) also
@@ -142,7 +146,7 @@ export class SoundSystem {
       queueTTL: options.queueTTL ?? 200,
     };
 
-    if (request.id !== undefined && this.isPlayingOrQueued(request.id)) return;
+    if (request.id !== undefined && this.countWithId(request.id) >= (options.maxConcurrent ?? 1)) return;
 
     if (this.tryPlayNow(request)) return;
 
@@ -158,8 +162,13 @@ export class SoundSystem {
     this.queue.push(request);
   }
 
-  private isPlayingOrQueued(id: string): boolean {
-    return this.active.some((v) => v.id === id) || this.queue.some((q) => q.id === id);
+  /** Count of currently active + queued requests sharing `id` — what
+   *  `maxConcurrent` is checked against. */
+  private countWithId(id: string): number {
+    let count = 0;
+    for (const v of this.active) if (v.id === id) count++;
+    for (const q of this.queue) if (q.id === id) count++;
+    return count;
   }
 
   /** Plays now if a voice is free, or by stealing the lowest-priority active
