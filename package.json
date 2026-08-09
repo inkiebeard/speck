@@ -16,7 +16,7 @@
   "files": [
     "dist"
   ],
-  "author":{
+  "author": {
     "email": "aaron@inkiebeard.codes",
     "name": "Aaron Toomey",
     "url": "https://inkiebeard.codes"
@@ -24,7 +24,9 @@
   "scripts": {
     "build": "tsc --emitDeclarationOnly && vite build && node scripts/write-speck-dts.mjs",
     "typecheck": "tsc --noEmit",
-    "example": "npm run build && npx --yes serve ."
+    "example": "npm run build && npx --yes serve .",
+    "pretest:perf": "npm run build",
+    "test:perf": "playwright test"
   },
   "peerDependencies": {
     "@dimforge/rapier3d-compat": ">=0.14.0",
@@ -32,6 +34,8 @@
   },
   "devDependencies": {
     "@dimforge/rapier3d-compat": "^0.14.0",
+    "@playwright/test": "^1.62.1",
+    "@types/node": "^26.2.0",
     "@types/three": "^0.160.0",
     "three": "^0.160.1",
     "typescript": "^5.9.3",

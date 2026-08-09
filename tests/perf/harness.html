@@ -1,0 +1,30 @@
+<!doctype html>
+<!--
+  Loads the built engine (and three, for the renderer benchmark) as real ES
+  modules and hangs them off `window` for each spec's page.evaluate() to use.
+  three.module.js is the identical CDN URL vite.config.ts rewrites
+  dist/speck.js's own "three" import to (see the CDN map there) — the
+  browser's module cache resolves both to one instance, same trick the
+  examples rely on, so this doesn't create a second three.js.
+-->
+<html>
+  <head>
+    <!-- Same reason matching-game.html carries this: three/examples/jsm
+         modules (unused directly here, but dist/speck.js's own GLTFLoader
+         pulls one in) import "three" as a bare specifier internally, which
+         only the browser's own module resolution can satisfy via an import
+         map — bundling isn't in play for this harness. -->
+    <script type="importmap">
+      { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.1/build/three.module.js" } }
+    </script>
+  </head>
+  <body>
+    <script type="module">
+      import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.1/build/three.module.js';
+      import * as Speck from '../../dist/speck.js';
+      window.THREE = THREE;
+      window.Speck = Speck;
+      window.__ready = true;
+    </script>
+  </body>
+</html>
