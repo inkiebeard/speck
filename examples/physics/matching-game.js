@@ -5,18 +5,11 @@
  * click-first-item-then-second-item matching, a score counter, and a debug
  * overlay.
  *
- * Runs straight in a browser via <script type="module">, no bundler: three
- * comes from the same CDN URL dist/speck.js was built against (so both
- * resolve to one module instance), and the engine comes from the built
- * dist/speck.js, not the TS source — this is what consuming the package for
- * real looks like. Run `npm run build` first, then serve this folder
- * statically (e.g. `npx serve examples`) and open matching-game.html.
+ * Run `npm run build` first, then serve this folder statically (e.g.
+ * `npx serve examples`) and open matching-game.html.
  */
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.1/build/three.module.js';
 import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.160.1/examples/jsm/controls/OrbitControls.js';
-// Same URL dist/speck.js resolves "@dimforge/rapier3d-compat" to internally
-// (see vite.config.ts), so this is one shared module instance, not a second
-// load — imported here only for the RigidBodyType enum.
 import RAPIER from 'https://cdn.jsdelivr.net/npm/@dimforge/rapier3d-compat@0.14.0/rapier.es.js';
 import {
   World,
@@ -33,8 +26,7 @@ import {
   Preloader,
 } from '../../dist/speck.js';
 
-/** Synthesizes a short two-tone chime, so the match cue needs no audio asset
- *  or CDN fetch — just an exponentially-decaying sum of two sine waves. */
+/** Synthesizes a short two-tone chime — no audio asset needed. */
 function createChimeBuffer(context) {
   const duration = 0.35;
   const length = Math.floor(context.sampleRate * duration);
@@ -51,8 +43,8 @@ function createChimeBuffer(context) {
   return buffer;
 }
 
-/** A short, soft low "tock" — deliberately distinct from the chime above, and
- *  quiet/brief, since with thousands of bodies this is going to fire a lot. */
+/** A short, soft low "tock" — deliberately distinct from the chime, and
+ *  brief since thousands of bodies will trigger it a lot. */
 function createNudgeBuffer(context) {
   const duration = 0.08;
   const length = Math.floor(context.sampleRate * duration);
@@ -66,24 +58,12 @@ function createNudgeBuffer(context) {
   return buffer;
 }
 
-/**
- * The 6 corner points of a wedge/plow shape: a triangular prism pivoting at
- * local origin and extending `length` outward along +X, `width` across Z,
- * `height` tall at its back. Cross-section (constant along X) is a right
- * triangle — flat on the ground the whole way, a vertical back wall, and a
- * sloped ramp connecting the two. That shape is *why* items get carried up
- * and over rather than jammed: the leading edge that actually meets an item
- * first is a thin, ground-level line (the ramp's low corner), never a flat
- * vertical face for something to wedge stuck against. Returned as a flat
- * [x,y,z, x,y,z, ...] array so the same points serve both the visual mesh
- * (`createWedgeGeometry`) and the physics collider (`RAPIER.ColliderDesc
- * .convexHull`) — one source of truth for the shape, so they can't drift
- * apart into a visual that doesn't match what's actually solid.
- */
+/** The 6 corner points of a wedge/plow shape pivoting at local origin. A thin
+ *  ground-level leading edge carries items up and over instead of jamming them. */
 function createWedgePoints(length, width, height) {
   const hw = width / 2;
   return [
-    0, 0, hw, // v0: pivot end, leading bottom (the thin edge that meets items first)
+    0, 0, hw, // v0: pivot end, leading bottom
     0, 0, -hw, // v1: pivot end, trailing bottom
     0, height, -hw, // v2: pivot end, trailing top
     length, 0, hw, // v3: outer end, leading bottom
@@ -92,10 +72,8 @@ function createWedgePoints(length, width, height) {
   ];
 }
 
-/** Builds a flat-shaded `BufferGeometry` for `createWedgePoints`' 6 points —
- *  non-indexed (each triangle gets its own unshared vertices) so
- *  `computeVertexNormals` yields one flat normal per face instead of
- *  averaging across the wedge's sharp edges. */
+/** Flat-shaded BufferGeometry for createWedgePoints' 6 points — non-indexed
+ *  so computeVertexNormals yields one flat normal per face. */
 function createWedgeGeometry(points) {
   const at = (i) => points.slice(i * 3, i * 3 + 3);
   const triangles = [
@@ -126,18 +104,14 @@ async function main() {
   // --- Three.js boilerplate (side-loaded, not part of the engine lib) ---
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 1000);
-  camera.position.set(0, 24, 34); // pulled back to match the larger arena below
+  camera.position.set(0, 24, 34);
   camera.lookAt(0, 0, 0);
   const gl = new THREE.WebGLRenderer({ antialias: true });
   gl.setSize(innerWidth, innerHeight);
   document.body.appendChild(gl.domElement);
   scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1.5));
 
-  // --- Loading screen, driven by Preloader below: a full-screen overlay with
-  // a progress bar, shown while physics/wasm init and the pile spawn (the
-  // slow, blocking-shaped setup work) run, torn down the moment that
-  // resolves. The engine has no opinion on what a loading screen looks like
-  // — Preloader just emits 0..1 numbers — so all of this is game-side.
+  // --- Loading screen, driven by Preloader below ---
   const loadingEl = document.createElement('div');
   loadingEl.style.cssText =
     'position: fixed; inset: 0; z-index: 10000; display: flex; flex-direction: column; ' +
@@ -157,29 +131,20 @@ async function main() {
   controls.target.set(0, 2, 0);
   controls.enableDamping = true;
 
-  // --- InputBuffer: maps the physical pick/cancel controls to named actions,
-  // so a keyboard player can cancel a hold (Escape) the same way a mouse
-  // player releases the button, and the game loop only ever asks "was `pick`
-  // released this tick" rather than juggling raw pointerup listeners itself.
   const input = new InputBuffer({
     pick: [{ device: 'mouse', button: 0 }],
     cancel: [{ device: 'keyboard', code: 'Escape' }],
   });
 
-// --- SoundSystem: a listener attached to the camera, with a few voices and a limiter to avoid a wall of sound when many items land at once. ---
-  const sound = new SoundSystem(camera, { 
-    maxVoices: 6, // max simultaneous sounds
-    limiter: true,  // if voices/sound emitters are all busy, drop the quietest instead of queuing
-    queueTTL: 200, // if a sound can't start within this many ms, drop it
+  const sound = new SoundSystem(camera, {
+    maxVoices: 6,
+    limiter: true, // if voices are all busy, drop the quietest instead of queuing
+    queueTTL: 200,
   });
   const matchChime = createChimeBuffer(sound.listener.context);
   const nudgeSound = createNudgeBuffer(sound.listener.context);
-  const NUDGE_CHANCE = 0.33; // not every bump should make noise, or it'd be a wall of sound
+  const NUDGE_CHANCE = 0.33; // not every bump should make noise
 
-  // Without this, camera.aspect/gl's size stay stuck at load-time dimensions
-  // while the pick handler below reads innerWidth/innerHeight fresh on every
-  // click — after any resize (including a devtools panel opening), that
-  // mismatch alone throws raycasting off, on top of the picking bug above.
   addEventListener('resize', () => {
     camera.aspect = innerWidth / innerHeight;
     camera.updateProjectionMatrix();
@@ -202,15 +167,12 @@ async function main() {
     renderer.registerType(t, geo, new THREE.MeshStandardMaterial({ color: palette[t] }), ITEM_COUNT);
   }
 
-  // A light, floaty gravity (not the arena's -20) reads better for a
-  // celebratory confetti-burst than realistic falling debris would.
+  // Lighter, floatier gravity than the arena's -20 reads better for a
+  // celebratory confetti burst than realistic falling debris.
   const particles = new ParticleSystem(300, { size: 0.2, gravity: { x: 0, y: -4, z: 0 }, damping: 0.5 });
   scene.add(particles.points);
 
-  // --- Arena dimensions: a floor + 4 walls (open top, invisible —
-  // physics-only colliders, no visual panels), so items can't roll off the
-  // edge and fall forever. Declared before the preloader tasks below since
-  // both the arena and spawn-pile task need them.
+  // --- Arena: floor + 4 invisible walls so items can't roll off the edge. ---
   const ARENA_HALF = 40;
   const WALL_HEIGHT = 30;
   const WALL_THICKNESS = 0.5;
@@ -222,36 +184,21 @@ async function main() {
   ];
   const SPAWN_HALF = ARENA_HALF - 3; // clearance from the walls
 
-  // --- Preloader: the loading screen above subscribes here for one 0..1
-  // number covering both of the batch's tasks (weighted — spawning ~3000
-  // bodies dominates load time next to wasm init, so it counts for more of
-  // the bar than `physics` does). `items` explicitly awaits `physicsReady`
-  // before touching `physicsSystem`, since Preloader runs tasks concurrently
-  // and has no built-in notion of one task depending on another's result.
+  // --- Preloader: one weighted 0..1 number for both tasks. `items` awaits
+  // physicsReady itself since Preloader runs tasks concurrently. ---
   const preloader = new Preloader();
   preloader.onProgress(({ fraction }) => {
     barFill.style.width = `${(fraction * 100).toFixed(1)}%`;
   });
 
-  // --- Sweeping wedge: a kinematic obstacle that continuously plows through
-  // the pile from the arena's center, rather than the one-time settle the
-  // pile would otherwise do on its own — sustained physics load and ongoing
-  // motion, not just a single dramatic drop. Kinematic bodies aren't affected
-  // by anything they touch (infinite mass — they push, they're never pushed
-  // back), but they still drive contact-force events like any other collider,
-  // so it feeds the same bump-sound wiring below for free. Its shape isn't a
-  // box: see `createWedgePoints`'s doc for why a plow-shaped wedge (not a
-  // flat-faced bar) is what keeps items sliding up and over instead of
-  // getting jammed against it. Built directly against `physicsSystem.world`
-  // and a bare `THREE.Mesh` (not through `PhysicsSystem`/`InstancedRenderer`,
-  // which only know entity-driven boxes and instanced types) — `world` is
-  // exposed on `PhysicsSystem` for exactly this: a custom collider shape
-  // PhysicsSystem doesn't have a preset for.
+  // --- Sweeping wedge: a kinematic obstacle plowing through the pile from
+  // the arena's center. Built directly against physicsSystem.world/a bare
+  // THREE.Mesh — a custom collider shape PhysicsSystem has no preset for. ---
   const SWEEP_LENGTH = ARENA_HALF - 4;
   const SWEEP_WIDTH = 3;
   const SWEEP_HEIGHT = 1.5;
   const SWEEP_Y = 0.15; // wedge bottom sits just above the floor collider's top surface
-  const SWEEP_RADIANS_PER_SEC = -(2 * Math.PI) / 20; // one revolution every 6s; negative reads as clockwise from above with this camera
+  const SWEEP_RADIANS_PER_SEC = -(2 * Math.PI) / 20; // one revolution every 6s; negative = clockwise from above
 
   const sweepPoints = createWedgePoints(SWEEP_LENGTH, SWEEP_WIDTH, SWEEP_HEIGHT);
   const sweepMesh = new THREE.Mesh(
@@ -266,18 +213,12 @@ async function main() {
   const sweepUp = new THREE.Vector3(0, 0.5, 0);
 
   let physicsSystem;
-  // Steeper than real gravity (-9.81): with linear damping on every dynamic
-  // body (added for pile stability, see addDynamicBox), drag opposes fall
-  // speed too, so real-world gravity read as floaty. -20 makes the fall feel
-  // more natural without touching the damping that keeps the pile settling.
+  // Steeper than real gravity: linear damping (added for pile stability)
+  // opposes fall speed too, so real-world gravity would read as floaty.
   const physicsReady = (async () => {
     physicsSystem = await PhysicsSystem.create(bodies, { x: 0, y: -20, z: 0 });
-    // { collisions: false }: this example only ever calls drainContactForces
-    // (for the nudge sound), never drainCollisions — with COLLISION_EVENTS
-    // left on (PhysicsSystem's old, only, default), Rapier was still doing
-    // start/stop bookkeeping every step for every touching pair in a
-    // 3000-body pile that nothing ever reads. contactForces stays on; that
-    // channel's the one actually driving sound feedback.
+    // collisions: false — this example only drains contactForces, and
+    // COLLISION_EVENTS would cost start/stop bookkeeping nothing here reads.
     physicsSystem.addStaticGround(0, { x: ARENA_HALF, z: ARENA_HALF }, 40, { collisions: false });
     for (const wall of walls) {
       physicsSystem.addStaticBox(wall.pos, wall.half, 40, { collisions: false });
@@ -291,7 +232,7 @@ async function main() {
     const sweepColliderDesc = RAPIER.ColliderDesc.convexHull(new Float32Array(sweepPoints));
     if (sweepColliderDesc) {
       sweepColliderDesc
-        .setActiveEvents(RAPIER.ActiveEvents.CONTACT_FORCE_EVENTS) // no COLLISION_EVENTS — see the note above
+        .setActiveEvents(RAPIER.ActiveEvents.CONTACT_FORCE_EVENTS)
         .setContactForceEventThreshold(40);
       physicsSystem.world.createCollider(sweepColliderDesc, sweepBody);
     }
@@ -304,7 +245,7 @@ async function main() {
         report(1);
       },
       items: async (report) => {
-        await physicsReady; // physics world + arena colliders must exist before bodies can join it
+        await physicsReady; // physics world + arena colliders must exist before bodies join it
         for (let i = 0; i < ITEM_COUNT; i++) {
           const e = world.spawn();
           const x = (Math.random() - 0.5) * 2 * SPAWN_HALF;
@@ -314,10 +255,8 @@ async function main() {
           types.add(e, Math.floor(Math.random() * TYPE_COUNT));
           physicsSystem.addDynamicBox(e, transforms, undefined, undefined, undefined, { collisions: false });
 
-          // Yield to the browser every 200 bodies rather than spawning all
-          // 3000 in one synchronous burst — keeps the tab responsive and the
-          // loading bar actually painting instead of a frozen page that
-          // jumps straight from 0% to a completed scene.
+          // Yield to the browser every 200 bodies rather than one big
+          // synchronous burst, so the loading bar actually paints.
           if (i % 200 === 199) {
             report((i + 1) / ITEM_COUNT);
             await new Promise((resolve) => requestAnimationFrame(resolve));
@@ -331,8 +270,7 @@ async function main() {
   const physics = physicsSystem;
   loadingEl.remove();
 
-  // --- Score (rudimentary — a plain top-center HTML element, game-specific
-  // state, so it lives here rather than in the engine) ---
+  // --- Score ---
   let score = 0;
   const scoreEl = document.createElement('div');
   scoreEl.style.cssText =
@@ -343,8 +281,7 @@ async function main() {
   document.body.appendChild(scoreEl);
 
   // --- Matching rule: two items match iff they share a type id. On a match,
-  // a ~650ms self-contained animation (rise, orbit each other while spiraling
-  // inward, collide) plays before both entities are actually despawned. ---
+  // a ~650ms rise/orbit/collide animation plays before both despawn. ---
   const MATCH_ANIM_DURATION = 0.65; // seconds
   const MATCH_ORBIT_TURNS = 1.5;
   const MATCH_RISE_HEIGHT = 1.5;
@@ -355,10 +292,8 @@ async function main() {
     if (types.get(ev.a) !== types.get(ev.b)) return;
     const burstColor = new THREE.Color(palette[types.get(ev.a)]);
 
-    // Detach physics *now*, not at despawn — despawn doesn't run until the
-    // animation completes below, and PhysicsSystem.update() would otherwise
-    // keep calling .translation()/.rotation() on these bodies every frame in
-    // between (and fight the animation's own direct writes to `transforms`).
+    // Detach physics now, not at despawn — PhysicsSystem.update() would
+    // otherwise keep writing to these bodies during the animation below.
     physics.removeBody(ev.a);
     physics.removeBody(ev.b);
     bodies.remove(ev.a);
@@ -377,8 +312,8 @@ async function main() {
     tweens.play({
       duration: MATCH_ANIM_DURATION,
       onUpdate(t) {
-        const rise = MATCH_RISE_HEIGHT * Math.sin(t * Math.PI * 0.5); // eases up, arrives at full height at collision
-        const r = radius * (1 - t); // spirals inward, exactly 0 (collision) at t=1
+        const rise = MATCH_RISE_HEIGHT * Math.sin(t * Math.PI * 0.5); // arrives at full height at collision
+        const r = radius * (1 - t); // spirals inward, exactly 0 at t=1
         const angle = startAngle + t * MATCH_ORBIT_TURNS * Math.PI * 2;
         const ox = Math.cos(angle) * r;
         const oz = Math.sin(angle) * r;
@@ -386,30 +321,18 @@ async function main() {
         transforms.add(ev.b, mid.x - ox, mid.y + rise, mid.z - oz);
       },
       onComplete() {
-        w.despawn(ev.a); // removes from transform/type stores (body already detached above)
+        w.despawn(ev.a);
         w.despawn(ev.b);
         score++;
         scoreEl.textContent = `Score: ${score}`;
-        // No `id` here — each match is a distinct event the player caused,
-        // not a redundant repeat, so it shouldn't dedup away if a few land in
-        // the same burst. `priority: 1` (above the default 0) just means this
-        // outranks lower-priority ambient/incidental cues for a voice slot if
-        // this example ever adds any.
         sound.play(matchChime, { volume: 0.5, priority: 1 });
 
-        // A confetti burst at the collision point, tinted with the matched
-        // type's own color. `mid` is the *ground-level* midpoint captured
-        // before the animation ran — the actual collision happens up at
-        // mid.y + MATCH_RISE_HEIGHT, where the rise animation tops out, so
-        // the burst originates there instead, not down at the pile.
+        // Confetti burst tinted with the matched type's color, originating at
+        // the collision point (mid.y + MATCH_RISE_HEIGHT), not the pile.
         const burstOrigin = { x: mid.x, y: mid.y + MATCH_RISE_HEIGHT, z: mid.z };
         for (let i = 0; i < MATCH_BURST_COUNT; i++) {
-          // Uniform direction over the full sphere (azimuthal angle uniform,
-          // polar angle via acos(2u-1)) rather than a flat ring with a fixed
-          // upward bias — a real burst scatters every which way, not just
-          // up-and-out like a fountain.
           const theta = Math.random() * Math.PI * 2;
-          const phi = Math.acos(2 * Math.random() - 1);
+          const phi = Math.acos(2 * Math.random() - 1); // uniform over the full sphere, not a fixed-bias ring
           const speed = 2 + Math.random() * 3;
           const velocity = {
             x: Math.sin(phi) * Math.cos(theta) * speed,
@@ -423,23 +346,12 @@ async function main() {
   });
 
   // --- Pick up / hold / drop ---
-  // Held item is switched to a kinematic Rapier body and driven every frame
-  // toward a target point derived from a *local offset captured at pickup*:
-  // the vector from the camera to the item at the moment it's grabbed,
-  // expressed in the camera's local frame (plus a slight upward lift).
-  // Reapplying that local offset against the camera's *current* orientation
-  // each frame is what keeps the item at the same bearing relative to the
-  // view as the camera orbits — using the item's distance alone (a pure
-  // forward offset) would instead snap it to dead-center of the view,
-  // regardless of where in frame it was originally picked from. Easing
-  // toward the target rather than snapping to it. Dropping hands the body
-  // back to `Dynamic` from wherever it currently is, so it falls from the
-  // drop point rather than jumping to wherever gravity would have carried
-  // the ignored body while held.
+  // Held item is a kinematic body driven toward a camera-local offset
+  // captured at pickup, reapplied each frame — keeps its screen bearing
+  // stable as the camera orbits, rather than snapping to view-center.
   const HOLD_LIFT = 0.6; // slight upward nudge, camera-local
   const HOLD_FOLLOW_RATE = 10; // higher = snappier easing toward the target
-  const OUTLINE_SCALE = 1.2; // a highlight ring around the item, not a recolor,
-  // so the item's own type color (used to identify a match) stays untouched.
+  const OUTLINE_SCALE = 1.2;
 
   const outline = new THREE.Mesh(
     new THREE.BoxGeometry(OUTLINE_SCALE, OUTLINE_SCALE, OUTLINE_SCALE),
@@ -479,13 +391,6 @@ async function main() {
   }
 
   // --- Picking: raycast -> instanceId -> entity ---
-  // OrbitControls also drives pointerdown/up on the canvas (for orbit-drag), so
-  // a pick only fires on a near-stationary click, not a camera drag. Cursor
-  // position is tracked here directly (InputBuffer maps buttons/keys to
-  // actions, not pointer coordinates); the `pick` action itself — whether the
-  // mouse button transitioned this tick — is read from `input` down in the
-  // fixed-step loop below, alongside `cancel` (Escape) for dropping without
-  // attempting a match.
   const ray = new THREE.Raycaster();
   const ndc = new THREE.Vector2();
   const PICK_DRAG_THRESHOLD = 4; // px
@@ -500,11 +405,9 @@ async function main() {
     ndc.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
   });
   function raycastPick() {
-    // Nearest hit across *all* types, not the first type (in loop order) that
-    // has any hit at all — with a dense, overlapping pile, a ray from a
-    // shallow angle passes through many boxes, and picking by type order
-    // would frequently resolve to one behind whatever's actually under the
-    // cursor. That's what read as an offset/"deadzone" at grazing angles.
+    // Nearest hit across all types, not the first type with any hit — a
+    // dense, overlapping pile at a shallow angle would otherwise frequently
+    // resolve to something behind whatever's actually under the cursor.
     ray.setFromCamera(ndc, camera);
     let closest = null;
     for (let t = 0; t < TYPE_COUNT; t++) {
@@ -520,23 +423,10 @@ async function main() {
 
   // --- Main loop ---
   // Physics + world.step() run on a fixed timestep via FixedStep, decoupled
-  // from render rate: zero, one, or several fixed steps happen per rendered
-  // frame depending on how much real time elapsed, so simulation speed (and
-  // things timed against it, like the match-combine TweenRunner animation)
-  // stays consistent across displays instead of tracking whatever rate
-  // requestAnimationFrame happens to fire at. No render interpolation yet —
-  // between fixed steps the render just shows the last simulated state, which
-  // can look slightly juddery when render Hz and FIXED_DT don't divide evenly;
-  // FixedStep.alpha is there for interpolation later.
+  // from render rate, so simulation speed stays consistent across displays.
   const FIXED_DT = 1 / 60;
-  // maxStepsPerFrame=1 (default is 5): with 5000 dynamic bodies, if a single
-  // physics step already costs more than one frame's budget, the default
-  // "catch up with extra steps" behavior compounds instead of recovering —
-  // each frame falls further behind, so the loop keeps trying to run more
-  // steps, which makes it slower still. Capping at 1 means the simulation
-  // runs in slow motion under sustained overload instead of that spiral;
-  // trades real-time accuracy for framerate stability, the right call for an
-  // interactive scene.
+  // maxStepsPerFrame=1 (default 5): with 5000 bodies, the default "catch up
+  // with extra steps" would compound instead of recovering under overload.
   const fixedStep = new FixedStep(FIXED_DT, 1);
   const holdTarget = new THREE.Vector3();
   let last = performance.now();
@@ -545,11 +435,7 @@ async function main() {
     last = now;
 
     if (held) {
-      // Re-project the local offset captured at pickup against the camera's
-      // *current* orientation, then ease currentPos toward it (frame-rate-
-      // independent exponential smoothing) rather than snapping. This is
-      // render-side smoothing of a visual target, not physics, so it uses the
-      // real per-frame dt rather than the fixed step below.
+      // Render-side smoothing of a visual target (real dt, not the fixed step).
       holdTarget.copy(held.localOffset).applyQuaternion(camera.quaternion).add(camera.position);
       const ease = 1 - Math.exp(-HOLD_FOLLOW_RATE * dt);
       held.currentPos.lerp(holdTarget, ease);
@@ -560,9 +446,6 @@ async function main() {
     }
 
     fixedStep.advance(dt, (fixedDt) => {
-      // Resolve one tick of action state first, so pick/cancel below (and any
-      // future system reading `input`) see this tick's edges rather than
-      // last tick's.
       input.update();
 
       if (input.justReleased('pick') && Math.hypot(curX - downX, curY - downY) <= PICK_DRAG_THRESHOLD) {
@@ -570,49 +453,32 @@ async function main() {
         if (!held) {
           if (pick) pickUp(pick.entity, pick.typeId);
         } else {
-          // Already holding one item — a hit on a second, different entity
-          // attempts a match (the handler above decides if the type ids
-          // actually agree). Either way, releasing `pick` drops the held item.
           if (pick && pick.entity !== held.entity) {
             world.events.emit({ type: 'match:attempt', a: held.entity, b: pick.entity });
           }
           drop();
         }
       } else if (held && input.justPressed('cancel')) {
-        drop(); // Escape: put the held item down without attempting a match
+        drop();
       }
 
-      // Advance the sweeping wedge's target rotation before physics.update()
-      // steps the world, so this tick's step is the one that actually moves
-      // it — a kinematic body only moves on the step after its "next"
-      // transform is set. Translation is never touched after creation (the
-      // wedge only spins in place around its pivot), so only rotation needs
-      // driving here.
+      // Advance the wedge's target rotation before physics.update() steps
+      // the world, so this tick's step is the one that moves it.
       sweepAngle += SWEEP_RADIANS_PER_SEC * fixedDt;
       sweepQuat.setFromAxisAngle(sweepUp, sweepAngle);
       if (sweepBody) sweepBody.setNextKinematicRotation(sweepQuat);
 
       physics.update(transforms, fixedDt); // step sim + copy transforms back
       if (sweepBody) {
-        // Not part of `transforms`/`bodies` (it's a scene prop, not an
-        // entity), so physics.update()'s copy-back doesn't touch it —
-        // synced here instead, straight from the body physics.update() just
-        // stepped.
+        // Not part of transforms/bodies (a scene prop, not an entity), so
+        // synced here straight from the body physics.update() just stepped.
         const p = sweepBody.translation();
         const q = sweepBody.rotation();
         sweepMesh.position.set(p.x, p.y, p.z);
         sweepMesh.quaternion.set(q.x, q.y, q.z, q.w);
       }
-      // --- Out-of-bounds recovery: the sweeping wedge can shove an item hard
-      // enough to squeeze it through a wall/floor seam (a kinematic body
-      // doesn't get pushed back by what it hits, so a fast-enough contact
-      // can tunnel a thin dynamic box past a thin static collider in one
-      // step). Rather than let a body fall forever — dead weight sitting in
-      // `bodies`/`transforms` forever, invisible below the floor — anything
-      // that ends up well below the arena gets teleported back above the
-      // pile to rain back in, same as its initial spawn. Held item is
-      // exempt: it's off physics-driven while held, and teleporting it out
-      // from under the player mid-hold would just look broken.
+      // --- Out-of-bounds recovery: the wedge can tunnel an item through a
+      // wall/floor seam; anything well below the arena rains back in instead of falling forever. ---
       const OOB_Y = -20;
       {
         const entities = transforms.entities;
@@ -627,58 +493,30 @@ async function main() {
           if (!handle) continue; // mid-match-animation: no body, tween owns its position
 
           const x = (Math.random() - 0.5) * 2 * SPAWN_HALF;
-          const y = 5 + Math.random() * 20; // rain back down, same as initial spawn
+          const y = 5 + Math.random() * 20;
           const z = (Math.random() - 0.5) * 2 * SPAWN_HALF;
           handle.body.setTranslation({ x, y, z }, true);
           handle.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
           handle.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
-          // Also write straight into `transforms` so this tick's render
-          // shows the recovered position instead of the stale OOB one from
-          // physics.update()'s copy-back above — otherwise the item would
-          // flash at its out-of-bounds spot for one frame before the next
-          // physics step corrects it.
+          // Also write straight into transforms so this tick's render shows
+          // the recovered position instead of the stale OOB one.
           raw[o] = x; raw[o + 1] = y; raw[o + 2] = z;
         }
       }
 
       world.step(fixedDt); // logic systems, event drain, tweens (may emit particles via match onComplete)
-      particles.update(fixedDt); // after world.step, so particles emitted this step get their first tick now, not next frame
+      particles.update(fixedDt); // after world.step, so particles emitted this step get their first tick now
 
-      // Contact-force events (not just collision-start): drained once per
-      // physics step (not once per rendered frame — several steps can run in
-      // one frame, or zero). PhysicsSystem's default threshold (40N) is only
-      // a coarse floor — it stops ordinary stacking pressure from generating
-      // an event at all, but a many-layer-deep pile settling can still cross
-      // it. "Should this make noise" is a stricter, separate question: only
-      // a *serious* impact (SERIOUS_IMPACT_FORCE, well above ordinary
-      // resting/stacking load) should ever play, and even then only 33% of
-      // the time — the rest is silently dropped, not just quiet. During the
-      // initial rain-down this can still evaluate a lot of candidates in a
-      // handful of steps as thousands of items land — exactly the burst
-      // SoundSystem's admission control exists for; louder impacts (above
-      // the serious-impact floor) get a louder cue, and the voice
-      // cap/limiter in SoundSystem catch whatever still overlaps.
+      // Only a serious impact (well above resting/stacking load) plays, and
+      // even then only 33% of the time — the rest is silently dropped.
       const SERIOUS_IMPACT_FORCE = 100;
       const HARD_HIT_FORCE = 250; // where volume scaling maxes out, tuned by ear
       physics.drainContactForces((a, b, magnitude) => {
         if (magnitude < SERIOUS_IMPACT_FORCE) return;
         if (Math.random() >= NUDGE_CHANCE) return;
         const intensity = Math.min((magnitude - SERIOUS_IMPACT_FORCE) / (HARD_HIT_FORCE - SERIOUS_IMPACT_FORCE), 1);
-        // Short queueTTL (default is 200): a nudge is tied to a specific,
-        // already-past instant of impact, more so than the match chime — if
-        // it can't get a voice within 60ms, the moment it was for has
-        // already moved on, so let it drop rather than trickle out late.
-        // No `id` here (unlike earlier): with the sweeping wedge plowing
-        // through the pile, several nudges landing in the same instant are
-        // usually genuinely distinct impacts at different points in the
-        // arena, not redundant copies of one event — an `id` dedup gate
-        // (even with `maxConcurrent`) just hard-drops everything past its
-        // cap instead of spreading load, which read as isolated, sparse
-        // "tock"s rather than the layered crunch a continuous sweep should
-        // have. `maxVoices` (6) + priority-based voice stealing is the
-        // actual load balancer: it already lets a match chime (priority 1)
-        // steal a voice from a lower-priority nudge when all 6 are full, so
-        // nothing important gets starved without needing a second gate here.
+        // Short queueTTL: a late nudge is stale, let it drop. No `id` dedup —
+        // simultaneous nudges here are usually genuinely distinct impacts.
         sound.play(nudgeSound, { volume: 0.15 + intensity * 0.35, queueTTL: 60 });
       });
     });

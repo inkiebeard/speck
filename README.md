@@ -1,4 +1,4 @@
-<img src="logo.png" width="128" alt="speck logo" />
+<img src="logo.webp" width="256" alt="speck logo" />
 
 # SPECK
 

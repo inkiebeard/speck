@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>speck — logo flight</title>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #000002; }
+      canvas { display: block; }
+    </style>
+  </head>
+  <body>
+    <!-- No jsm/ modules used here (no GLTFLoader/OrbitControls), so unlike the
+         other examples this import map isn't strictly load-bearing — kept
+         anyway so logo-flight.js's own `import * as THREE from "three"` and
+         dist/speck.js's internal one resolve to the same module instance,
+         matching every other example's setup for consistency. -->
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.160.1/build/three.module.js"
+        }
+      }
+    </script>
+    <script type="module" src="./logo-flight.js"></script>
+  </body>
+</html>

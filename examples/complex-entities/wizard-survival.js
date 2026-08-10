@@ -3,18 +3,14 @@
  * necromancer (necromancer.glb) that periodically raises a swarm of
  * skeletons (skeleton.glb, capped at 100 concurrently alive), which seek the
  * player out and attack in melee. The player fights back with a mana-gated
- * spell bolt: mana drains per cast and regenerates over time, so the
- * "recharge" is the mana pool refilling, not a fixed cooldown timer.
+ * spell bolt.
  *
  * Shows the engine's GLTF loader, AI (behavior trees + the per-entity AI
  * system + separation steering off SpatialGrid), the event queue for
- * damage/death, InputBuffer for WASD + cast, and Preloader for the loading
- * screen — all without physics, unlike the examples/physics demo.
+ * damage/death, InputBuffer, and Preloader for the loading screen — no
+ * physics, unlike the examples/physics demo.
  *
- * Runs straight in a browser via <script type="module">, no bundler: three
- * comes from the same CDN URL dist/speck.js was built against, and the
- * engine comes from the built dist/speck.js, not the TS source. Run
- * `npm run build` first, then serve the repo root statically and open
+ * Run `npm run build` first, then serve the repo root statically and open
  * wizard-survival.html.
  */
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.1/build/three.module.js';
@@ -48,7 +44,7 @@ function createCastBuffer(context) {
   for (let i = 0; i < length; i++) {
     const t = i / context.sampleRate;
     const freq = 500 + t * 1400; // rising sweep reads as a "casting" whoosh
-    const envelope = Math.sin(Math.PI * (t / duration)); // fades in and out
+    const envelope = Math.sin(Math.PI * (t / duration));
     data[i] = Math.sin(2 * Math.PI * freq * t) * envelope * 0.6;
   }
   return buffer;
@@ -62,7 +58,7 @@ function createHitBuffer(context) {
   for (let i = 0; i < length; i++) {
     const t = i / context.sampleRate;
     const envelope = Math.exp(-30 * t);
-    data[i] = (Math.random() * 2 - 1) * envelope * 0.5; // short noise crack
+    data[i] = (Math.random() * 2 - 1) * envelope * 0.5;
   }
   return buffer;
 }
@@ -74,7 +70,7 @@ function createDeathBuffer(context) {
   const data = buffer.getChannelData(0);
   for (let i = 0; i < length; i++) {
     const t = i / context.sampleRate;
-    const freq = 300 * Math.exp(-3 * t); // falling tone
+    const freq = 300 * Math.exp(-3 * t);
     const envelope = Math.exp(-4 * t);
     data[i] = Math.sin(2 * Math.PI * freq * t) * envelope * 0.5;
   }
@@ -108,9 +104,8 @@ function createSpawnBuffer(context) {
   return buffer;
 }
 
-/** The necromancer's own bolt — a falling, slightly dissonant two-tone
- *  sting, deliberately darker than the player's rising castSfx sweep so the
- *  two casters read as distinct threats by ear alone. */
+/** The necromancer's own bolt — a falling, dissonant two-tone sting, deliberately
+ *  darker than the player's rising castSfx sweep so the two read as distinct threats. */
 function createNecromancerCastBuffer(context) {
   const duration = 0.4;
   const length = Math.floor(context.sampleRate * duration);
@@ -119,7 +114,7 @@ function createNecromancerCastBuffer(context) {
   const freqs = [220, 233]; // a minor second apart — deliberately dissonant
   for (let i = 0; i < length; i++) {
     const t = i / context.sampleRate;
-    const sweep = 1 - 0.4 * (t / duration); // falling pitch, opposite of the player's rising cast
+    const sweep = 1 - 0.4 * (t / duration);
     const envelope = Math.exp(-3 * t);
     let sample = 0;
     for (const f of freqs) sample += Math.sin(2 * Math.PI * f * sweep * t);
@@ -136,30 +131,23 @@ const NECROMANCER_POS = { x: 0, y: 0, z: -25 };
 
 const PLAYER_MAX_HP = 100;
 const PLAYER_SPEED = 7.5;
-const PLAYER_RADIUS = 0.5; // collision radius against obstacles
+const PLAYER_RADIUS = 0.5;
 
-// Camera: a chase cam orbiting the player at (CAM_DISTANCE, CAM_YAW, CAM_PITCH)
-// — yaw doubles as the player's own facing (mouse/touch-look turns the
-// character directly, the way most third-person shooters work), so there's
-// no separate "turn to face travel direction" smoothing to tune here.
+// Chase cam orbiting the player at (CAM_DISTANCE, CAM_YAW, CAM_PITCH) — yaw
+// doubles as the player's own facing (mouse/touch-look turns the character).
 const CAM_MIN_DISTANCE = 3;
 const CAM_MAX_DISTANCE = 16;
 const CAM_MIN_PITCH = -0.15;
 const CAM_MAX_PITCH = 1.15;
 const CAM_EYE_HEIGHT = 1.4;
-const MOUSE_LOOK_SENSITIVITY = 0.0024; // radians per pixel of pointer-locked mouse movement
-const TOUCH_LOOK_SENSITIVITY = 0.0055; // radians per pixel of touch-drag
+const MOUSE_LOOK_SENSITIVITY = 0.0024;
+const TOUCH_LOOK_SENSITIVITY = 0.0055;
 const JOYSTICK_RADIUS = 45; // px
 
 const MANA_MAX = 100;
-const MANA_REGEN_PER_SEC = 14; // this is the spell's "recharge"
-// Press-and-hold power-up: charge fraction 0..1 ramps linearly over
-// CHARGE_MAX_TIME and lerps cost/damage/radius/speed between their MIN/MAX
-// pair — a quick tap still fires (at MIN, cheaply, a short weak toss), a
-// full hold trades more mana for a bigger, harder-hitting, farther-flying
-// bolt. Angle (from camPitch) still shapes the arc on top of that — a flat
-// full-power throw goes long and low, a steep one lobs shorter and higher —
-// so both how hard and where you aim change the shot's actual range.
+const MANA_REGEN_PER_SEC = 14;
+// Press-and-hold power-up: charge fraction 0..1 ramps over CHARGE_MAX_TIME and
+// lerps cost/damage/radius/speed between their MIN/MAX pair.
 const CHARGE_MAX_TIME = 1.1;
 const SPELL_MIN_COST = 12;
 const SPELL_MAX_COST = 42;
@@ -167,83 +155,50 @@ const SPELL_MIN_DAMAGE = 15;
 const SPELL_MAX_DAMAGE = 55;
 const SPELL_MIN_RADIUS = 0.35;
 const SPELL_MAX_RADIUS = 0.75;
-const SPELL_MIN_SPEED = 15; // total launch speed at zero charge — a weak flick, short range even flat-aimed
-const SPELL_MAX_SPEED = 34; // total launch speed at full charge — split into horizontal/vertical by camPitch, see castSpell
-const SPELL_MAX_RANGE = 45; // horizontal distance from the cast point, past which a still-airborne bolt is forced down
-const GRAVITY = -24; // heavier than Earth's — reads as a weighty lob, not a floaty toss
-// A bigger charge doesn't just move faster, it's a bigger/heavier mass of
-// energy (see SPELL_MIN/MAX_RADIUS) — scaling how hard gravity pulls it down
-// too is what actually sells that weight, rather than just a same-shaped
-// arc that happens to go farther. A minimal-charge bolt is light enough to
-// fly comparatively flat/quick; a full-charge one visibly sags under itself.
+const SPELL_MIN_SPEED = 15;
+const SPELL_MAX_SPEED = 34;
+const SPELL_MAX_RANGE = 45; // past this a still-airborne bolt is forced down
+const GRAVITY = -24; // heavier than Earth's — reads as a weighty lob, not floaty
+// A bigger charge is a heavier mass of energy, not just a faster copy of a
+// small one — scaling gravity too is what sells that weight.
 const SPELL_MIN_GRAVITY_SCALE = 0.65;
 const SPELL_MAX_GRAVITY_SCALE = 1.5;
-// Splash on impact (ground, obstacle, or a direct hit) — horizontal-only
-// distance from the impact point, with damage falling off linearly to 0 at
-// the edge, so a bigger charge doesn't just hit harder but also punishes a
-// tighter cluster of skeletons. Scales with the same charge fraction as
-// everything else in castSpell. MIN_RADIUS is deliberately well past
-// SEPARATION_RADIUS (skeletons packed into a swarm routinely end up closer
-// together than their own separation steering "wants") so even a quick,
-// uncharged tap reliably catches a crowded neighbor, not just the target
-// standing exactly at the impact point.
+// Splash on impact — horizontal-only distance, damage falling off linearly to
+// 0 at the edge. MIN_RADIUS is kept past SEPARATION_RADIUS so even an
+// uncharged tap reliably catches a crowded neighbor.
 const SPLASH_MIN_RADIUS = 2.4;
 const SPLASH_MAX_RADIUS = 5.5;
 const SPLASH_MIN_DAMAGE = 14;
 const SPLASH_MAX_DAMAGE = 42;
 
-// The necromancer cycles through three states (see updateNecromancer):
-// 'wandering' the arena at large — steering away the instant the player
-// closes within NECROMANCER_MIN_DISTANCE rather than ever letting itself get
-// caught at close range — until its spawn timer runs out, at which point it
-// plants itself and enters 'ritual' — standing still while a wave of
-// skeletons rises out of the ground around it — for NECROMANCER_RITUAL_
-// DURATION, then resumes wandering. Any non-lethal hit interrupts whatever
-// it's doing and switches it to 'fleeing'; a hit mid-ritual also cancels
-// that ritual (see interruptRitual) rather than letting it finish. Fleeing
-// itself runs until line of sight to the player actually breaks (behind an
-// obstacle — see hasLineOfSight) *and* at least NECROMANCER_FLEE_MIN_DURATION
-// has passed since the most recent hit (a hit mid-flee resets the clock, not
-// just extends it — see the 'damage' handler), capped by
-// NECROMANCER_FLEE_MAX_DURATION so it can't get stuck running forever in the
-// open with nothing to duck behind. It faces the player continuously in
-// every state *except* fleeing, where it faces the direction it's actually
-// running instead (backing away while watching its target makes sense for
-// repositioning, not for a panicked retreat). Every NECROMANCER_RITUALS_PER_
-// SPELL-th completed ritual
-// (interrupted ones don't count) queues up a bolt at the player, but it only
-// actually fires once there's a clear line of sight — see
-// necromancerWantsToFireBolt — which can land on the same tick the ritual
-// ends or much later, whenever a shot actually opens up.
+// The necromancer cycles 'wandering' -> 'ritual' (raises a skeleton wave,
+// standing still) -> 'wandering'. Any non-lethal hit switches it to
+// 'fleeing' toward cover until line of sight breaks and a minimum flee
+// duration has passed. Every NECROMANCER_RITUALS_PER_SPELL-th completed
+// ritual queues a bolt at the player, fired once line of sight opens.
 const NECROMANCER_MAX_HP = 600;
-const NECROMANCER_SPAWN_INTERVAL = 3.5; // how long it wanders between rituals
-const NECROMANCER_RITUAL_DURATION = 2.2; // must exceed the last skeleton's spawn offset + its own rise time
+const NECROMANCER_SPAWN_INTERVAL = 3.5;
+const NECROMANCER_RITUAL_DURATION = 2.2; // must exceed the last skeleton's spawn offset + rise time
 const NECROMANCER_WANDER_SPEED = 3.5;
 const SKELETONS_PER_WAVE = 3;
 const MAX_SKELETONS = 100;
 const SPAWN_JITTER_RADIUS = 4;
-const NECROMANCER_RADIUS = 1.1; // collision radius against obstacles
+const NECROMANCER_RADIUS = 1.1;
 const NECROMANCER_FLEE_SPEED = 5.5;
-const NECROMANCER_FLEE_MIN_DURATION = 2; // won't stop fleeing on a LOS break before this, timed from the *last* hit
-const NECROMANCER_FLEE_MAX_DURATION = 15; // safety cap if it can never break line of sight
-const NECROMANCER_MIN_DISTANCE = 14; // never wanders closer than this to the player — see moveNecromancerWander
-const NECROMANCER_COVER_MIN_CLEARANCE = 6; // ignores obstacles it's already this close to when picking flee cover — see nearestObstacle
+const NECROMANCER_FLEE_MIN_DURATION = 2; // timed from the *last* hit
+const NECROMANCER_FLEE_MAX_DURATION = 15; // safety cap if LOS never breaks
+const NECROMANCER_MIN_DISTANCE = 14; // never wanders closer than this to the player
+const NECROMANCER_COVER_MIN_CLEARANCE = 6; // ignores obstacles already this close when picking cover
 const NECROMANCER_RITUALS_PER_SPELL = 2;
 const NECROMANCER_BOLT_SPEED = 22;
 const NECROMANCER_BOLT_DAMAGE = 10;
 const NECROMANCER_BOLT_MAX_RANGE = 60;
 const NECROMANCER_BOLT_HIT_RADIUS = 1.1;
 
-// Each skeleton runs its own small perception state machine (see
-// skeletonBehavior): 'wander' near where it rose until it actually notices
-// the player — close enough (SKELETON_DETECT_RADIUS) regardless of sightline,
-// or farther but in the clear (SKELETON_VISION_RANGE + hasLineOfSight) —
-// at which point it 'chase's. Losing track of the player (out of both
-// ranges) for SKELETON_LOSE_INTEREST_TIME drops it back to wandering rather
-// than chasing a memory forever. A nearby ally dying pulls any *wandering*
-// (not already chasing/investigating) skeleton within SKELETON_ALERT_RADIUS
-// into 'investigate'ing the spot — see alertNearbySkeletons — so a swarm
-// reacts to losses even before spotting the player itself.
+// Each skeleton runs its own perception state machine: 'wander' near where it
+// rose until it notices the player (proximity or line-of-sight vision range),
+// then 'chase'. Losing track for SKELETON_LOSE_INTEREST_TIME drops it back to
+// wandering. An ally dying alerts nearby wandering skeletons to 'investigate'.
 const SKELETON_MAX_HP = 30;
 const SKELETON_SPEED = 3.2;
 const SKELETON_WANDER_SPEED = 1.4;
@@ -253,39 +208,28 @@ const SKELETON_ATTACK_DAMAGE = 6;
 const SKELETON_ATTACK_COOLDOWN = 1.1;
 const SEPARATION_RADIUS = 1.6;
 const SKELETON_DETECT_RADIUS = 6; // always notices the player this close, sightline or not
-const SKELETON_VISION_RANGE = 16; // notices farther out too, but only with a clear line of sight
-const SKELETON_LOSE_INTEREST_TIME = 4; // seconds of no detection before giving up a chase
+const SKELETON_VISION_RANGE = 16; // farther, but only with a clear line of sight
+const SKELETON_LOSE_INTEREST_TIME = 4;
 const SKELETON_WANDER_RADIUS = 8; // roams within this of where it rose
-// steerToward only clears wanderTarget on arrival (distance < 1) — a target
-// picked on the far side of an obstacle it can't route around otherwise
-// never counts as "arrived" and resolveObstacles fights it to a standstill
-// every tick, forever (this is what "a skeleton is just standing there doing
-// nothing" bug reports turned out to be). Forcing a fresh target after this
-// long regardless of whether it arrived bounds how long any one pick can
-// leave it stuck — worst case it just keeps retrying every few seconds.
+// A target on the far side of an unreachable obstacle never counts as
+// "arrived," so this timeout forces a fresh pick regardless (this was the
+// "a skeleton is just standing there doing nothing" bug).
 const SKELETON_WANDER_TARGET_TIMEOUT = 6;
-const SKELETON_ALERT_RADIUS = 10; // how far a death draws wandering allies to investigate
-const SKELETON_INVESTIGATE_TIMEOUT = 5; // give up and resume wandering if nothing's found by then
-// A freshly-raised skeleton spends this long climbing out of the ground
-// (see the skeletonBehavior rise phase) before it can move/attack on its
-// own — buried this deep at the start so it's fully hidden below the
-// terrain, not just poking up at spawn.
+const SKELETON_ALERT_RADIUS = 10;
+const SKELETON_INVESTIGATE_TIMEOUT = 5;
+// A freshly-raised skeleton spends this long climbing out of the ground,
+// buried deep enough at the start to be fully hidden below the terrain.
 const SKELETON_RISE_DURATION = 1.1;
 const SKELETON_RISE_DEPTH = 1.9;
-const SKELETON_SINK_DURATION = 0.5; // how fast an interrupted (still-rising) skeleton sinks back down and despawns
-const SKELETON_RADIUS = 0.4; // collision radius against obstacles
+const SKELETON_SINK_DURATION = 0.5;
+const SKELETON_RADIUS = 0.4;
 
 const GRID_CELL_SIZE = 3;
 
-// Static circular obstacles scattered across the arena — block movement and
-// spell bolts alike, give the skeleton swarm something to path around, and
-// give the player cover from line of sight. Hand-placed (not randomized) so
-// they never block the player/necromancer starting spots or the skeleton
-// spawn jitter radius around the necromancer, and never overlap each other.
-// `type` (default 'rock' when omitted) picks both the geometry/texture used
-// to build it (see the obstacle mesh loop) and nothing about the collision
-// logic below — pillars are still just a circle+height like every rock, so
-// they block movement and spell bolts exactly the same way for free.
+// Static circular obstacles — block movement and spell bolts alike, give the
+// skeleton swarm something to path around, and give the player cover.
+// Hand-placed so they never overlap or block the start spots. `type`
+// (default 'rock') only picks the geometry/texture, not collision logic.
 const OBSTACLES = [
   { x: -14, z: 6, radius: 2.2, height: 3.2 },
   { x: 12, z: -4, radius: 1.8, height: 2.6 },
@@ -307,28 +251,15 @@ const OBSTACLES = [
 
 // --- Small helpers ---------------------------------------------------
 
-/** Gentle analytic rolling terrain (no heightmap asset) — shared by the
- *  ground mesh's own vertex displacement and every entity/obstacle's Y
- *  placement, so characters sit on the bumps instead of floating above or
- *  clipping into them. Amplitude stays small (~±0.7) so it reads as "small
- *  variations," not hills that would fight movement/AI, which are otherwise
- *  purely 2D (XZ) in this example. */
+/** Gentle analytic rolling terrain, shared by the ground mesh's own vertex
+ *  displacement and every entity/obstacle's Y placement. */
 function groundHeight(x, z) {
   return Math.sin(x * 0.15) * 0.22 + Math.cos(z * 0.13) * 0.22 + Math.sin((x + z) * 0.05) * 0.28;
 }
 
-/** Pushes (x, z) out of any `OBSTACLES` entry it's currently overlapping —
- *  simple circle-vs-circle resolution, not real physics, which is all a
- *  static, non-moving obstacle set needs. Used by every ground-bound mover
- *  (player, skeletons, the fleeing necromancer) so the rocks are actually
- *  solid instead of just decoration.
- *
- *  Runs a few passes, not one: a single pass resolves each obstacle
- *  independently, so pushing clear of obstacle A can shove a point straight
- *  into obstacle B (most likely for a point already wedged between two
- *  close-together obstacles, e.g. near the paired pillars) — one pass alone
- *  leaves it still overlapping B. A handful of passes converges instead of
- *  leaving a mover visibly stuck oscillating between two solids every frame. */
+/** Pushes (x, z) out of any `OBSTACLES` entry it's overlapping — simple
+ *  circle-vs-circle resolution. Runs a few passes so clearing one obstacle
+ *  can't shove a point straight into a second, close-together one. */
 function resolveObstacles(x, z, radius) {
   for (let pass = 0; pass < 3; pass++) {
     for (let i = 0; i < OBSTACLES.length; i++) {
@@ -348,8 +279,7 @@ function resolveObstacles(x, z, radius) {
   return { x, z };
 }
 
-/** Whether the segment (x1,z1)-(x2,z2) passes within `radius` of (cx,cz) —
- *  closest-point-on-segment-to-circle-center, the standard segment/circle test. */
+/** Whether the segment (x1,z1)-(x2,z2) passes within `radius` of (cx,cz). */
 function segmentIntersectsCircle(x1, z1, x2, z2, cx, cz, radius) {
   const dx = x2 - x1;
   const dz = z2 - z1;
@@ -363,13 +293,9 @@ function segmentIntersectsCircle(x1, z1, x2, z2, cx, cz, radius) {
   return ddx * ddx + ddz * ddz <= radius * radius;
 }
 
-/** Horizontal-only line of sight between two points, blocked by any
- *  `OBSTACLES` entry the straight line between them passes through — used
- *  to decide when the fleeing necromancer has actually found cover, not
- *  just put distance between itself and the player (see updateNecromancer).
- *  Ignores height entirely: every obstacle is tall enough (>=2.2, well
- *  above both entities' own height) to fully occlude at this game's scale,
- *  so a 2D check is enough without needing a real raycast. */
+/** Horizontal-only line of sight, blocked by any OBSTACLES entry the line
+ *  passes through — height ignored since every obstacle is tall enough to
+ *  fully occlude at this game's scale. */
 function hasLineOfSight(x1, z1, x2, z2) {
   for (let i = 0; i < OBSTACLES.length; i++) {
     const ob = OBSTACLES[i];
@@ -378,13 +304,9 @@ function hasLineOfSight(x1, z1, x2, z2) {
   return true;
 }
 
-/** Nearest OBSTACLES entry to (x, z) — the fleeing necromancer biases its
- *  run toward this rather than straight away from the player, so it's
- *  actually seeking cover, not just retreating in the open. `minClearance`
- *  excludes anything whose edge is already closer than that (distance to
- *  center minus its own radius) — without it, a hit landed while already
- *  standing next to a rock just picks that same rock as "cover", and the
- *  necromancer never actually goes anywhere, just hugs it. */
+/** Nearest OBSTACLES entry to (x, z) — used to pick flee cover. `minClearance`
+ *  excludes anything already closer than that, so getting hit while already
+ *  next to a rock doesn't just pick that same rock as "cover". */
 function nearestObstacle(x, z, minClearance = 0) {
   let best = null;
   let bestDist = Infinity;
@@ -400,25 +322,19 @@ function nearestObstacle(x, z, minClearance = 0) {
   return best;
 }
 
-/** Wraps a cloned GLTF scene in a Group, scaled to `targetHeight` and
- *  centered on X/Z with its base sitting at local y=0 — so every model,
- *  regardless of its authored scale/pivot, can be positioned uniformly by
- *  just setting the returned Group's position/quaternion.
- *
- *  `Object3D.clone(true)` deep-clones the node hierarchy but deliberately
- *  *not* geometry/materials — every clone shares the same material instance
- *  by default, which is normally the cheap, correct thing (see the class
- *  doc on GltfLoader). `cloneMaterials: true` opts a specific instance out
- *  of that sharing, so its color can be tinted (e.g. a hit flash) without
- *  every other instance of the same model flashing too — pass it only for
- *  instances that actually need independent per-instance material state. */
+/** Wraps a cloned GLTF scene in a Group scaled to `targetHeight`, centered on
+ *  X/Z with its base at local y=0, so every model can be positioned uniformly
+ *  regardless of its authored scale/pivot. `cloneMaterials` opts one instance
+ *  out of the normal shared-material cloning (see GltfLoader), for cases like
+ *  a hit flash that shouldn't tint every instance of the model at once. */
 function normalizedInstance(template, targetHeight, cloneMaterials = false) {
   const model = template.clone(true);
-  if (cloneMaterials) {
-    model.traverse((child) => {
-      if (child.isMesh) child.material = child.material.clone();
-    });
-  }
+  model.traverse((child) => {
+    if (!child.isMesh) return;
+    if (cloneMaterials) child.material = child.material.clone();
+    child.castShadow = true;
+    child.receiveShadow = true;
+  });
   const box = new THREE.Box3().setFromObject(model);
   const size = new THREE.Vector3();
   box.getSize(size);
@@ -437,11 +353,8 @@ function normalizedInstance(template, targetHeight, cloneMaterials = false) {
   return root;
 }
 
-// atan2(dx, dz) would be the right formula if the models' authored "forward"
-// pointed down +Z, but wizard/necromancer/skeleton all face down +X at
-// identity rotation instead (visually confirmed: at yaw 0 they render in
-// right-profile, not front-on) — atan2(-dz, dx) rotates that +X-facing pose
-// to point at (dx, dz) instead.
+// wizard/necromancer/skeleton all face down +X at identity rotation (not
+// +Z), so atan2(-dz, dx) rotates that pose to point at (dx, dz).
 function yawQuaternion(dx, dz, out = new THREE.Quaternion()) {
   const yaw = Math.atan2(-dz, dx);
   return out.setFromAxisAngle(UP, yaw);
@@ -449,8 +362,6 @@ function yawQuaternion(dx, dz, out = new THREE.Quaternion()) {
 
 const UP = new THREE.Vector3(0, 1, 0);
 
-// Coarse-pointer devices (touch/stylus without a mouse) get the virtual
-// joystick + drag-to-look + tap-to-cast controls instead of keyboard/mouse.
 const isTouch = matchMedia('(pointer: coarse)').matches;
 
 async function main() {
@@ -460,16 +371,27 @@ async function main() {
   const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 1000);
   const gl = new THREE.WebGLRenderer({ antialias: true });
   gl.setSize(innerWidth, innerHeight);
+  gl.shadowMap.enabled = true;
+  gl.shadowMap.type = THREE.PCFSoftShadowMap;
   document.body.appendChild(gl.domElement);
 
   scene.add(new THREE.HemisphereLight(0x8899cc, 0x201814, 1.1));
   const sun = new THREE.DirectionalLight(0xffe8c8, 1.4);
   sun.position.set(20, 30, 10);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  // Fixed orthographic box covering the whole arena, not a following box —
+  // the arena is static, so a tight fixed frustum gives sharper shadows.
+  const shadowExtent = ARENA_HALF * 1.3;
+  sun.shadow.camera.left = -shadowExtent;
+  sun.shadow.camera.right = shadowExtent;
+  sun.shadow.camera.top = shadowExtent;
+  sun.shadow.camera.bottom = -shadowExtent;
+  sun.shadow.camera.near = 1;
+  sun.shadow.camera.far = 80;
+  sun.shadow.bias = -0.0015;
   scene.add(sun);
-
-  // Ground + obstacle meshes are built further down, once the Preloader has
-  // actually loaded their textures (see just after loadingEl.remove()) —
-  // they used to be built here, before those textures existed.
+  scene.add(sun.target);
 
   // --- Loading screen (game-side; the engine's Preloader only emits 0..1) ---
   const loadingEl = document.createElement('div');
@@ -534,10 +456,6 @@ async function main() {
   });
 
   const textureLoader = new THREE.TextureLoader();
-  /** Configures a loaded texture for tiling across a surface much bigger
-   *  than the source image (ground, a tall pillar) — repeat counts are
-   *  chosen per-use below, this just sets the shared bits every tiled
-   *  texture in the scene needs (wrap mode + correct color-managed decode). */
   function tileable(texture, repeatX, repeatY) {
     texture.wrapS = THREE.RepeatWrapping;
     texture.wrapT = THREE.RepeatWrapping;
@@ -558,25 +476,26 @@ async function main() {
         return { wizard, necromancer, skeleton };
       },
       textures: async (report) => {
-        const [ground, stone, marble, pillar] = await Promise.all([
+        const [ground, stone, marble, pillar, background] = await Promise.all([
           textureLoader.loadAsync('./ground-texture.jpg'),
           textureLoader.loadAsync('./stone-texture.jpg'),
           textureLoader.loadAsync('./marble-stone-texture.jpg'),
           textureLoader.loadAsync('./pillar-texture.jpg'),
+          textureLoader.loadAsync('./spooky background.jpg'),
         ]);
         report(1);
-        return { ground, stone, marble, pillar };
+        return { ground, stone, marble, pillar, background };
       },
     },
     { templates: 5, textures: 1 }, // GLBs are ~10-15MB each vs a few hundred KB per texture
   );
   loadingEl.remove();
 
-  // Bake the "lie flat" rotation into the geometry itself (rather than the
-  // Mesh's .rotation) so position.y below is already the up axis — displacing
-  // it per-vertex with the same groundHeight() every entity/obstacle uses for
-  // its own Y is what keeps everything sitting on the bumps instead of
-  // floating above or clipping into them.
+  // Flat backdrop (not an equirectangular env map), so it fills the sky above
+  // the fogged horizon without turning with the chase cam.
+  textures.background.colorSpace = THREE.SRGBColorSpace;
+  scene.background = textures.background;
+
   const groundGeo = new THREE.PlaneGeometry(ARENA_HALF * 2.4, ARENA_HALF * 2.4, 60, 60);
   groundGeo.rotateX(-Math.PI / 2);
   const groundPos = groundGeo.attributes.position;
@@ -584,24 +503,17 @@ async function main() {
     groundPos.setY(i, groundHeight(groundPos.getX(i), groundPos.getZ(i)));
   }
   groundGeo.computeVertexNormals();
-  // One tile roughly every 6 world units, so the texture doesn't obviously
-  // repeat within a single glance but also doesn't blur out at this scale.
   const groundMat = new THREE.MeshStandardMaterial({
     map: tileable(textures.ground, (ARENA_HALF * 2.4) / 6, (ARENA_HALF * 2.4) / 6),
     roughness: 1,
   });
   const ground = new THREE.Mesh(groundGeo, groundMat);
+  ground.receiveShadow = true;
   scene.add(ground);
 
-  // Obstacle meshes: rocks (DodecahedronGeometry, a plain built-in three.js
-  // primitive standing in for a boulder — no rock asset on hand) alternate
-  // between the two stone textures for a bit of variety across the field;
-  // pillars (CylinderGeometry) get the dedicated pillar texture. Geometry is
-  // shared per type (only scale/rotation/position differ per instance) —
-  // materials aren't, since each needs its own texture repeat/rotation.
-  // Every obstacle is sunk partway into the terrain (rather than placed
-  // exactly on the surface) so an imperfect base-to-ground fit never shows
-  // as a gap.
+  // Rocks (DodecahedronGeometry) alternate between two stone textures for
+  // variety; pillars (CylinderGeometry) get their own texture. Every obstacle
+  // is sunk partway into the terrain so an imperfect base-to-ground fit never shows.
   const rockGeo = new THREE.DodecahedronGeometry(1, 0);
   const rockTextures = [tileable(textures.stone, 1, 1), tileable(textures.marble, 1, 1)];
   const pillarGeo = new THREE.CylinderGeometry(1, 1, 1, 16);
@@ -616,6 +528,8 @@ async function main() {
       );
       mesh.scale.set(ob.radius, ob.height, ob.radius);
       mesh.position.set(ob.x, groundHeight(ob.x, ob.z) + ob.height / 2 - 0.15, ob.z);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
       scene.add(mesh);
     } else {
       const mesh = new THREE.Mesh(
@@ -626,14 +540,14 @@ async function main() {
       mesh.scale.set(ob.radius, ob.height / 2, ob.radius);
       mesh.position.set(ob.x, groundHeight(ob.x, ob.z) + ob.height * 0.28, ob.z);
       mesh.rotation.set(Math.random() * 0.3, Math.random() * Math.PI * 2, Math.random() * 0.3);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
       scene.add(mesh);
     }
   }
 
-  // --- Run stats, shown on the completion screen once the level is fully
-  // cleared (necromancer dead and every skeleton it raised gone too — see
-  // the 'died' handler's clear check). Timers are measured from here, not
-  // from page load, so asset loading doesn't count against the player. ---
+  // --- Run stats, shown on the completion screen once the level clears.
+  // Timers measured from here, not page load, so asset loading doesn't count. ---
   const gameStartTime = performance.now();
   const stats = {
     spellsShot: 0,
@@ -649,10 +563,8 @@ async function main() {
   };
 
   // --- Spawn helpers ---
-  // Every character mesh spawnStatic ever creates, tagged with which entity
-  // it belongs to — the input to sweepOrphanedMeshes' unconditional cleanup,
-  // see its own doc comment for why this exists on top of the normal
-  // 'died'/interruptRitual removal paths.
+  // Every character mesh spawnStatic creates, tagged with its owning entity —
+  // input to sweepOrphanedMeshes' cleanup pass below.
   const spawnedCharacterMeshes = new Set();
 
   function spawnStatic(kind, template, targetHeight, pos, maxHp, cloneMaterials = false) {
@@ -686,24 +598,19 @@ async function main() {
   );
   let necromancerAlive = true;
   let necromancerState = 'wandering'; // 'wandering' | 'ritual' | 'fleeing'
-  let necromancerFleeTimer = 0; // elapsed time this flee, set by the 'damage' handler below
-  let necromancerFleeCoverTarget = null; // fixed obstacle to make for, picked once per flee — see the 'damage' handler
+  let necromancerFleeTimer = 0;
+  let necromancerFleeCoverTarget = null;
   let necromancerWanderTarget = null;
   let necromancerRitualTimer = 0;
   let ritualElapsed = 0;
   let ritualSpawnQueue = []; // seconds-from-ritual-start still to spawn, ascending
-  let necromancerRitualsCompleted = 0; // counts only rituals that finished, not interrupted ones — see updateNecromancer
-  let necromancerWantsToFireBolt = false; // queued by a ritual completion, fired the instant line of sight opens — see updateNecromancer
+  let necromancerRitualsCompleted = 0; // only counts finished, not interrupted, rituals
+  let necromancerWantsToFireBolt = false;
   const currentRitualSkeletons = []; // entities raised by the in-progress ritual, until they finish rising
-  const sinkingSkeletons = []; // { mesh, elapsed, duration, startY } — interrupted mid-rise, see interruptRitual
+  const sinkingSkeletons = []; // { mesh, elapsed, duration, startY } — interrupted mid-rise
 
-  // --- Hovering health bars (skeletons only — the necromancer already has
-  // its own HUD boss bar, and the player has the HP bar). A THREE.Sprite
-  // always billboards to face the camera on its own, so unlike the
-  // character mesh it's parented under, it doesn't need any manual
-  // per-frame facing logic — just repositioning (see syncMeshes) and
-  // repainting its canvas texture when hp actually changes (not every
-  // frame). ---
+  // --- Hovering health bars (skeletons only) — a Sprite billboards on its
+  // own, so it just needs repositioning and repainting when hp changes. ---
   const HEALTH_BAR_W = 64;
   const HEALTH_BAR_H = 8;
   function createHealthBarSprite() {
@@ -732,11 +639,8 @@ async function main() {
   }
 
   // --- Hit flash: briefly tints whatever took damage, so splash damage that
-  // lands but doesn't kill still reads as "that landed" instead of nothing
-  // visibly happening. Needs its own material per instance (cloneMaterials
-  // in spawnSkeleton) — every skeleton shares one material by default (see
-  // normalizedInstance's doc), so tinting it directly would flash the whole
-  // swarm at once instead of just the one hit. ---
+  // doesn't kill still reads as "that landed." Needs cloneMaterials in
+  // spawnSkeleton, or tinting would flash the whole shared-material swarm. ---
   const HIT_FLASH_DURATION = 0.15;
   const flashingEntities = new Map(); // Entity -> { materials: THREE.Material[], timer }
 
@@ -770,11 +674,9 @@ async function main() {
 
   let skeletonCount = 0;
 
-  /** Raises one skeleton at the necromancer's *current* position (it
-   *  wanders now, so this can't be the fixed NECROMANCER_POS anymore),
-   *  buried SKELETON_RISE_DEPTH underground — the skeletonBehavior rise
-   *  phase below animates it climbing out over SKELETON_RISE_DURATION.
-   *  Returns the new entity, or undefined if already at MAX_SKELETONS. */
+  /** Raises one skeleton at the necromancer's current position, buried
+   *  SKELETON_RISE_DEPTH underground (skeletonBehavior's rise phase animates
+   *  it climbing out). Returns undefined if already at MAX_SKELETONS. */
   function spawnSkeleton() {
     if (skeletonCount >= MAX_SKELETONS) return undefined;
     const ns = transforms.slotOf(necromancerEntity) * transforms.stride;
@@ -797,7 +699,7 @@ async function main() {
         riseTimer: SKELETON_RISE_DURATION,
         groundY,
         state: 'wander', // 'wander' | 'investigate' | 'chase'
-        homeX: pos.x, // wanders within SKELETON_WANDER_RADIUS of where it rose, not the whole arena
+        homeX: pos.x,
         homeZ: pos.z,
         wanderTarget: null,
         wanderTargetTimer: 0,
@@ -814,13 +716,9 @@ async function main() {
     return e;
   }
 
-  // --- Skeleton AI: tick down its attack cooldown, update what it's aware of
-  // (see the SKELETON_DETECT/VISION/LOSE_INTEREST comment up top), then act
-  // on whichever of rise / chase / investigate / wander currently applies —
-  // rise always wins (can't do anything else mid-emergence), the rest are
-  // mutually exclusive via ctx.blackboard.state. Built from the engine's
-  // behavior-tree primitives to actually exercise them, rather than one big
-  // bespoke function. ---
+  // --- Skeleton AI: tick down attack cooldown, update perception, then act on
+  // whichever of rise / chase / investigate / wander applies (mutually
+  // exclusive via blackboard.state). Built from behavior-tree primitives. ---
   const skeletonBehavior = sequence(
     action((ctx) => {
       const bb = ctx.blackboard;
@@ -833,7 +731,7 @@ async function main() {
       } else if (bb.state === 'chase') {
         bb.loseInterestTimer += ctx.dt;
         if (bb.loseInterestTimer >= SKELETON_LOSE_INTEREST_TIME) {
-          bb.state = 'wander'; // lost track of it — back to roaming, not still chasing a memory
+          bb.state = 'wander';
           bb.wanderTarget = null;
         }
       }
@@ -850,11 +748,8 @@ async function main() {
           const raw = transforms.raw;
           const y = THREE.MathUtils.lerp(ctx.blackboard.groundY - SKELETON_RISE_DEPTH, ctx.blackboard.groundY, t);
           transforms.add(ctx.entity, raw[o], y, raw[o + 2], raw[o + 3], raw[o + 4], raw[o + 5], raw[o + 6]);
-          // Self-report completion the instant it happens, rather than
-          // leaving interruptRitual to assume (from ritual-duration timing
-          // margins alone) that anything still in currentRitualSkeletons by
-          // the time the ritual ends must have finished. Keeps that array
-          // an accurate "still pending" list regardless of tuning changes.
+          // Self-report completion immediately, so currentRitualSkeletons
+          // stays accurate regardless of ritual-duration tuning.
           if (ctx.blackboard.riseTimer <= 0) {
             const idx = currentRitualSkeletons.indexOf(ctx.entity);
             if (idx !== -1) currentRitualSkeletons.splice(idx, 1);
@@ -868,7 +763,7 @@ async function main() {
           sequence(
             condition((ctx) => distanceTo(ctx.entity, playerEntity) <= SKELETON_ATTACK_RANGE),
             action((ctx) => {
-              if (ctx.blackboard.attackCooldown > 0) return 'success'; // still recovering, stand and wait
+              if (ctx.blackboard.attackCooldown > 0) return 'success';
               ctx.blackboard.attackCooldown = SKELETON_ATTACK_COOLDOWN;
               world.events.emit({ type: 'damage', target: playerEntity, amount: SKELETON_ATTACK_DAMAGE });
               stats.skeletonHitsTaken++;
@@ -893,7 +788,7 @@ async function main() {
           bb.investigateTimer -= ctx.dt;
           const dist = steerToward(ctx.entity, bb.investigateTarget.x, bb.investigateTarget.z, SKELETON_INVESTIGATE_SPEED, ctx.dt);
           if (dist < 1.5 || bb.investigateTimer <= 0) {
-            bb.state = 'wander'; // arrived and found nothing, or gave up — either way, back to roaming
+            bb.state = 'wander';
             bb.investigateTarget = null;
             bb.wanderTarget = null;
           }
@@ -911,9 +806,6 @@ async function main() {
         }
         bb.wanderTargetTimer += ctx.dt;
         const dist = steerToward(ctx.entity, bb.wanderTarget.x, bb.wanderTarget.z, SKELETON_WANDER_SPEED, ctx.dt);
-        // Cleared on arrival (a fresh target next tick reads as a brief idle
-        // beat) or after SKELETON_WANDER_TARGET_TIMEOUT regardless — see its
-        // comment for why the timeout matters as more than just a fallback.
         if (dist < 1 || bb.wanderTargetTimer >= SKELETON_WANDER_TARGET_TIMEOUT) bb.wanderTarget = null;
         return 'success';
       }),
@@ -929,10 +821,8 @@ async function main() {
     return Math.hypot(dx, dz);
   }
 
-  /** Proximity alone (SKELETON_DETECT_RADIUS) always registers, sightline or
-   *  not — something that close would be heard/sensed regardless. Farther
-   *  out (up to SKELETON_VISION_RANGE), it only counts with a clear line of
-   *  sight, same obstacle-blocking check the necromancer's flee AI uses. */
+  /** Proximity alone always registers, sightline or not; farther out (up to
+   *  SKELETON_VISION_RANGE) only counts with a clear line of sight. */
   function skeletonCanSeePlayer(entity) {
     const dist = distanceTo(entity, playerEntity);
     if (dist <= SKELETON_DETECT_RADIUS) return true;
@@ -946,12 +836,9 @@ async function main() {
     return hasLineOfSight(raw[eo], raw[eo + 2], raw[po], raw[po + 2]);
   }
 
-  /** Pulls any *wandering* (not already chasing or investigating something
-   *  else) skeleton within SKELETON_ALERT_RADIUS of (x, z) into investigating
-   *  that spot — called on an ally's death (see the 'died' handler) so a
-   *  swarm reacts to losses even before any of them have personally spotted
-   *  the player. Skeletons already chasing/investigating are left alone —
-   *  stale secondhand info shouldn't pull them off a live one. */
+  /** Pulls any wandering (not already chasing/investigating) skeleton within
+   *  SKELETON_ALERT_RADIUS into investigating (x, z) — called on an ally's
+   *  death so the swarm reacts even before spotting the player itself. */
   function alertNearbySkeletons(x, z, excludeEntity) {
     const nearby = spatialGrid.queryRadius(transforms, x, groundHeight(x, z), z, SKELETON_ALERT_RADIUS);
     for (let i = 0; i < nearby.length; i++) {
@@ -970,10 +857,8 @@ async function main() {
 
   const steerOut = { x: 0, y: 0, z: 0 };
   /** Moves `e` toward (targetX, targetZ) at `speed`, blended with separation
-   *  steering off neighbors and resolved against obstacles — the one
-   *  movement primitive wander/investigate/chase all share, just with
-   *  different targets and speeds. Returns the *pre-move* distance to the
-   *  target, so a caller can cheaply check "did I just arrive". */
+   *  steering and resolved against obstacles. Returns the pre-move distance
+   *  to the target, so a caller can cheaply check "did I just arrive". */
   function steerToward(e, targetX, targetZ, speed, dt) {
     const slot = transforms.slotOf(e);
     const o = slot * transforms.stride;
@@ -1006,12 +891,8 @@ async function main() {
     return [q.x, q.y, q.z, q.w];
   }
 
-  /** The necromancer faces the player continuously, in every state,
-   *  independent of whichever way it's actually moving (backing away while
-   *  still watching its target). Falls back to `fallback` (its current
-   *  rotation) if the player can't be found or is essentially on top of it
-   *  (a zero-length look vector would otherwise feed NaN into yawQuaternion)
-   *  rather than snapping to some arbitrary direction. */
+  /** The necromancer faces the player in every state except fleeing. Falls
+   *  back to `fallback` if the player can't be found or is on top of it. */
   function necromancerLookAtPlayer(nx, nz, fallback) {
     const pSlot = transforms.slotOf(playerEntity);
     if (pSlot === -1) return fallback;
@@ -1025,9 +906,9 @@ async function main() {
 
   world.addSystem(createAiSystem(ai));
 
-  // --- Damage / death, via the event queue (mirrors the matching-game's
-  // match:attempt pattern): a system or AI node just emits `damage`; this
-  // handles the bookkeeping, and cascades into `died` within the same tick. ---
+  // --- Damage / death, via the event queue (mirrors matching-game's
+  // match:attempt pattern): a system emits `damage`, this does the
+  // bookkeeping and cascades into `died` within the same tick. ---
   world.events.on('damage', (ev, w) => {
     const hp = health.get(ev.target);
     if (!hp) return; // already dying/despawned this tick
@@ -1038,9 +919,8 @@ async function main() {
       sound.play(hurtSfx, { volume: 0.7, priority: 2, id: 'hurt', maxConcurrent: 2 });
       flashDamage();
     } else {
-      // maxConcurrent well above the old default of 1 — a single splash hit
-      // can land on several skeletons in the same tick, and deduping down
-      // to one voice made everything past the first hit silent.
+      // maxConcurrent well above the default of 1 — a splash hit can land on
+      // several skeletons in one tick.
       sound.play(hitSfx, { volume: 0.35, id: 'hit', maxConcurrent: 8, queueTTL: 80 });
     }
     const bar = healthBars.get(ev.target);
@@ -1049,28 +929,14 @@ async function main() {
       hp.hp = 0;
       w.events.emit({ type: 'died', entity: ev.target, kind });
     } else if (kind === 'necromancer') {
-      // Starts fleeing toward the nearest obstacle at the moment it was hit
-      // (actually seeking cover, not just retreating), blended each tick in
-      // updateNecromancer with the *current* away-from-player direction —
-      // recomputed live off the player's live position there, not fixed
-      // here, so it keeps reacting if the player moves during the chase
-      // instead of committing to whatever was true at this one instant. The
-      // cover target itself does stay fixed for the flee's duration (picked
-      // here, once) so it doesn't dither between obstacles of similar
-      // distance. Overwrites any flee already in progress with a fresh one,
-      // so a second hit mid-flee redirects/resets it. A hit mid-ritual
-      // cancels it outright (see interruptRitual) rather than letting
-      // already-summoned-but-still-rising skeletons finish.
+      // Starts fleeing toward the nearest cover, blended each tick in
+      // updateNecromancer with the current away-from-player direction. A hit
+      // mid-ritual cancels it outright (see interruptRitual).
       if (necromancerState === 'ritual') interruptRitual();
       necromancerState = 'fleeing';
-      necromancerFleeTimer = 0; // now counts up — elapsed flee time, checked against NECROMANCER_FLEE_MAX_DURATION
+      necromancerFleeTimer = 0;
       const ns = transforms.slotOf(ev.target) * transforms.stride;
       const raw = transforms.raw;
-      // Ignores whatever it's already standing next to (see nearestObstacle's
-      // minClearance) — getting hit while already hugging a rock should send
-      // it running somewhere else, not "cover" behind the same rock it's
-      // already at. Falls back to the unrestricted nearest if literally
-      // nothing clears the threshold (a very obstacle-sparse spot).
       necromancerFleeCoverTarget =
         nearestObstacle(raw[ns], raw[ns + 2], NECROMANCER_COVER_MIN_CLEARANCE) ?? nearestObstacle(raw[ns], raw[ns + 2]);
     }
@@ -1095,7 +961,7 @@ async function main() {
     } else if (ev.kind === 'necromancer') {
       necromancerAlive = false;
       stats.necromancerKillTime = (performance.now() - gameStartTime) / 1000;
-      interruptRitual(); // sink+despawn anyone still mid-rise when its source was destroyed
+      interruptRitual();
       burst(pos, 0x9b59ff, 60);
       sound.play(deathSfx, { volume: 0.9, priority: 2 });
       showBanner('The Necromancer has fallen!', '#b892ff');
@@ -1103,11 +969,8 @@ async function main() {
     } else if (ev.kind === 'player') {
       gameOver = true;
       burst(pos, 0x66ccff, 40);
-      // A held, deliberately slow-fading-in vignette behind the death
-      // screen — distinct from the brief per-hit flashDamage() pulse (that
-      // one still clears itself on its own short timer; this one stays
-      // until a restart, gated off that timer via deathVignetteActive so
-      // the two don't fight over hitFlash's opacity).
+      // A held, slow-fading vignette — distinct from flashDamage()'s brief
+      // per-hit pulse, gated off deathVignetteActive so the two don't fight.
       deathVignetteActive = true;
       hitFlash.style.transition = 'opacity 1.2s ease-out';
       hitFlash.style.opacity = '0.3';
@@ -1115,10 +978,7 @@ async function main() {
       w.despawn(ev.entity);
     }
 
-    // The level is "cleared" the moment both are true, whichever death (this
-    // one or an earlier one) happens to be the one that makes it so — e.g.
-    // mopping up the last skeleton after the necromancer's already dead, or
-    // the reverse if it happened to die with none of its skeletons left.
+    // Cleared the moment both are true, whichever death makes it so.
     if (!gameOver && !levelComplete && !necromancerAlive && skeletonCount === 0) {
       stats.levelClearTime = (performance.now() - gameStartTime) / 1000;
       showCompletionScreen();
@@ -1165,9 +1025,7 @@ async function main() {
   const mpFill = hud.querySelector('#mpFill');
   const skelCountEl = hud.querySelector('#skelCount');
 
-  // A small centered reticle, mainly so aiming the now-arcing/lobbed spell
-  // (and reading the trajectory preview against it) has a fixed reference
-  // point on screen instead of just "wherever the camera happens to point".
+  // Centered reticle — a fixed reference point for aiming the lobbed spell.
   const reticle = document.createElement('div');
   reticle.style.cssText =
     'position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 9999; ' +
@@ -1175,9 +1033,7 @@ async function main() {
     'box-shadow: 0 0 3px rgba(0,0,0,0.8); pointer-events: none;';
   document.body.appendChild(reticle);
 
-  // Charge meter — hidden except while a press-and-hold cast is charging
-  // (see updateChargeVisuals). Sits just above the reticle so it reads as
-  // "this is what that hold is building toward."
+  // Charge meter — hidden except while a press-and-hold cast is charging.
   const chargeBarWrap = document.createElement('div');
   chargeBarWrap.style.cssText =
     'position: fixed; top: calc(50% - 22px); left: 50%; transform: translateX(-50%); z-index: 9999; ' +
@@ -1188,8 +1044,6 @@ async function main() {
   chargeBarWrap.appendChild(chargeBarFill);
   document.body.appendChild(chargeBarWrap);
 
-  // Discoverability for the controls — nothing else on screen tells the
-  // player how to move/cast, and the two schemes are quite different.
   const controlsHint = document.createElement('div');
   controlsHint.style.cssText =
     'position: fixed; right: 12px; bottom: 12px; z-index: 9999; ' +
@@ -1226,9 +1080,8 @@ async function main() {
     banner.style.opacity = '1';
   }
 
-  // --- Completion screen: shown once the level is fully cleared (see the
-  // 'died' handler's shared clear-check), same "freeze the sim, press R to
-  // restart" shape as the death screen, plus a stat line summary of the run. ---
+  // --- Completion screen: same "freeze the sim, press R" shape as the death
+  // screen, plus a stat line summary of the run. ---
   const completionScreen = document.createElement('div');
   completionScreen.style.cssText =
     'position: fixed; inset: 0; z-index: 10002; display: none; align-items: center; justify-content: center; ' +
@@ -1275,10 +1128,7 @@ async function main() {
     completionScreen.style.display = 'flex';
   }
 
-  // Only a hard page reload actually resets things here — spawned meshes,
-  // Rapier-free but still-live timers/AI state, HUD DOM, etc. would all need
-  // individual teardown otherwise, and this example has no "menu" state to
-  // return to anyway.
+  // Only a hard reload actually resets things — no menu state to return to.
   addEventListener('keydown', (e) => {
     if ((gameOver || levelComplete) && e.code === 'KeyR') location.reload();
   });
@@ -1288,39 +1138,25 @@ async function main() {
     'position: fixed; inset: 0; z-index: 9998; background: #ff0000; opacity: 0; pointer-events: none; transition: opacity 60ms;';
   document.body.appendChild(hitFlash);
   let flashTimer = 0;
-  let deathVignetteActive = false; // true once the player dies — see the 'died' handler; keeps the countdown below from clearing its opacity
+  let deathVignetteActive = false; // true once the player dies — see the 'died' handler
   function flashDamage() {
-    if (deathVignetteActive) return; // don't stomp the held death vignette with a brief per-hit pulse
+    if (deathVignetteActive) return;
     hitFlash.style.opacity = '0.25';
     flashTimer = 0.12;
   }
 
-  // --- Camera + character rotation: a hand-rolled chase cam instead of
-  // OrbitControls, because OrbitControls only ever turns the *camera* around
-  // a fixed target while dragging — it has no idea a "player" exists, so it
-  // can't also turn the character, and requires a button held the whole
-  // time. Here `camYaw`/`camPitch` are the single source of truth for both:
-  // the camera orbits the player at that yaw/pitch, and the player's own
-  // facing is set to `camYaw` directly every frame, so looking around *is*
-  // turning the character (the way most third-person shooters work) rather
-  // than something the character does independently on its own schedule.
-  //
-  // Desktop: click the canvas to acquire the Pointer Lock API — once locked,
-  // every mouse move (not just while a button is held) rotates the camera,
-  // and a plain click casts the spell. Touch: dragging anywhere but the
-  // joystick rotates the camera directly (no lock concept on touchscreens);
-  // a short drag-free tap casts instead.
+  // --- Camera + character rotation: a hand-rolled chase cam, not
+  // OrbitControls — camYaw/camPitch are the single source of truth for both
+  // the camera's orbit and the player's own facing, so looking around *is*
+  // turning the character (the way most third-person shooters work).
+  // Desktop: click to acquire pointer lock, then mouse-move rotates and a
+  // click casts. Touch: drag rotates, a short tap casts. ---
   let camYaw = Math.atan2(-(NECROMANCER_POS.z - PLAYER_START.z), NECROMANCER_POS.x - PLAYER_START.x);
-  // Closer to the player's own eye line by default (low pitch, short
-  // distance) rather than the far-overhead angle a bigger camDistance/pitch
-  // would give — reads as an over-the-shoulder shooter cam, which also
-  // makes the trajectory preview/reticle actually line up with where the
-  // camera is looking instead of a bird's-eye view floating well above it.
+  // Low pitch/short distance by default — an over-the-shoulder shooter cam,
+  // so the trajectory preview lines up with where the camera looks.
   let camPitch = 0.22;
   let camDistance = 5.5;
 
-  // top: 52px, below the boss health bar (top: 16px + its own ~34px height),
-  // so the two never overlap.
   const lookPrompt = document.createElement('div');
   lookPrompt.style.cssText =
     'position: fixed; top: 52px; left: 50%; transform: translateX(-50%); z-index: 9999; ' +
@@ -1332,13 +1168,9 @@ async function main() {
   gl.domElement.style.touchAction = 'none'; // otherwise touch-drag scrolls/zooms the page instead of looking
 
   if (!isTouch) {
-    // pointerdown/up (not 'click') so a press-and-hold actually spans the
-    // whole gesture: the first press (unlocked) only acquires the lock and
-    // fires nothing; every press after that starts a charge, and release —
-    // wherever the mouse ends up, even off the canvas — fires it. Listening
-    // on window for pointerup (not gl.domElement) is what makes "release
-    // after the cursor left the canvas" still register instead of stranding
-    // the charge active forever.
+    // pointerdown/up (not 'click') so a press-and-hold spans the whole
+    // gesture: first press only acquires the lock, every press after starts
+    // a charge, and release — even off-canvas — fires it.
     gl.domElement.addEventListener('pointerdown', () => {
       if (document.pointerLockElement !== gl.domElement) {
         gl.domElement.requestPointerLock();
@@ -1353,11 +1185,8 @@ async function main() {
     addEventListener('mousemove', (e) => {
       if (document.pointerLockElement !== gl.domElement) return;
       camYaw -= e.movementX * MOUSE_LOOK_SENSITIVITY;
-      // CAM_MIN_PITCH is the near-horizontal end (camera low, close behind
-      // the player) and CAM_MAX_PITCH the overhead end (camera high, looking
-      // steeply down) — moving the mouse up should swing toward the former
-      // (the camera "looks up" relative to its overhead extreme), hence +,
-      // not -, since movementY is negative for an upward mouse move.
+      // CAM_MIN_PITCH is near-horizontal, CAM_MAX_PITCH overhead — moving the
+      // mouse up should swing toward the former, hence + not -.
       camPitch = THREE.MathUtils.clamp(camPitch + e.movementY * MOUSE_LOOK_SENSITIVITY, CAM_MIN_PITCH, CAM_MAX_PITCH);
     });
     gl.domElement.addEventListener('wheel', (e) => {
@@ -1366,8 +1195,7 @@ async function main() {
   }
 
   // --- Touch: virtual joystick (movement) + drag-to-look/tap-to-cast on the
-  // rest of the screen. Two independent pointers, tracked by id so a thumb
-  // on the joystick doesn't fight a thumb looking around. ---
+  // rest of the screen, tracked by pointer id so the two never fight. ---
   const joyVec = { forward: 0, strafe: 0 }; // read by movePlayer; stays {0,0} on desktop
   if (isTouch) {
     const joyBase = document.createElement('div');
@@ -1414,12 +1242,8 @@ async function main() {
     joyBase.addEventListener('pointerup', releaseJoystick);
     joyBase.addEventListener('pointercancel', releaseJoystick);
 
-    // Look + charge: any drag on the canvas itself (the joystick is a
-    // separate, higher element, so pointer events there never reach this
-    // listener). The hold IS the charge — pressing down starts it, dragging
-    // to aim while held doesn't cancel it, and lifting fires at whatever
-    // charge accumulated, same "press and hold" gesture as a quick tap
-    // (which just fires at ~0 charge).
+    // The hold IS the charge — pressing starts it, dragging to aim while
+    // held doesn't cancel it, lifting fires at whatever charge accumulated.
     let lookPointerId = null;
     let lookLastX = 0;
     let lookLastY = 0;
@@ -1434,7 +1258,6 @@ async function main() {
     gl.domElement.addEventListener('pointermove', (e) => {
       if (e.pointerId !== lookPointerId) return;
       camYaw -= (e.clientX - lookLastX) * TOUCH_LOOK_SENSITIVITY;
-      // Same sign convention as the desktop mousemove handler above — see its comment.
       camPitch = THREE.MathUtils.clamp(
         camPitch + (e.clientY - lookLastY) * TOUCH_LOOK_SENSITIVITY,
         CAM_MIN_PITCH,
@@ -1451,23 +1274,21 @@ async function main() {
     gl.domElement.addEventListener('pointercancel', (e) => {
       if (e.pointerId === lookPointerId) {
         lookPointerId = null;
-        charging = false; // interrupted gesture (e.g. an OS gesture took over) — don't fire
+        charging = false; // interrupted gesture — don't fire
       }
     });
   }
 
-  /** Orbits the camera around the player at (camDistance, camYaw, camPitch)
-   *  and points it at the player's eye height — called once per rendered
-   *  frame, independent of the fixed-step sim rate, so looking around stays
-   *  smooth even when several sim steps (or zero) run in a given frame. */
+  /** Orbits the camera around the player at (camDistance, camYaw, camPitch),
+   *  once per rendered frame independent of the fixed-step sim rate. */
   function updateCamera() {
     const slot = transforms.slotOf(playerEntity);
-    if (slot === -1) return; // despawned on death (see the 'died' handler) — freeze the last camera pose
+    if (slot === -1) return; // despawned on death — freeze the last camera pose
 
     const o = slot * transforms.stride;
     const raw = transforms.raw;
     const px = raw[o];
-    const py = raw[o + 1]; // the player's own Y already tracks groundHeight(px, pz) — see movePlayer
+    const py = raw[o + 1];
     const pz = raw[o + 2];
 
     const horizontal = camDistance * Math.cos(camPitch);
@@ -1509,8 +1330,8 @@ async function main() {
     let px = raw[o];
     let pz = raw[o + 2];
 
-    // Clamp to unit length rather than always normalizing — a partially
-    // pushed joystick should move slower, not snap to full speed.
+    // Clamp to unit length rather than normalizing — a partially pushed
+    // joystick should move slower, not snap to full speed.
     const moveLen = moveVec.length();
     if (moveLen > 1e-6) {
       const scale = Math.min(moveLen, 1) / moveLen;
@@ -1521,9 +1342,6 @@ async function main() {
       pz = THREE.MathUtils.clamp(pz, -ARENA_HALF + 1, ARENA_HALF - 1);
     }
 
-    // The character always faces the way the camera looks (see the class
-    // comment above `camYaw`) — movement is a strafe relative to that, not
-    // something that turns the character on its own.
     transforms.add(
       playerEntity,
       px,
@@ -1536,34 +1354,25 @@ async function main() {
     );
   }
 
-  // --- Spell bolts: a handful of short-lived, non-entity projectiles (same
-  // reasoning as ParticleSystem — too churny/low-identity to justify a full
-  // Entity/TransformStore row each). Collision uses the same SpatialGrid the
-  // AI queries, rebuilt fresh by world.step() each tick. ---
+  // --- Spell bolts: short-lived, non-entity projectiles (too churny/low-
+  // identity to justify a full entity row each). Collision uses the same
+  // SpatialGrid the AI queries, rebuilt fresh by world.step() each tick. ---
   const bolts = [];
-  // A unit sphere, scaled per-bolt at creation to that shot's charge-scaled
-  // radius (see castSpell) — geometry itself never changes after that, so
-  // one shared instance is enough regardless of how many different sizes are
-  // in flight at once.
-  const boltGeo = new THREE.SphereGeometry(1, 12, 10);
+  const boltGeo = new THREE.SphereGeometry(1, 12, 10); // scaled per-bolt to that shot's charge radius
   const boltColorMin = new THREE.Color(0x8a5bff); // dim, cheap tap
   const boltColorMax = new THREE.Color(0xf0e6ff); // bright near-white, full charge
 
-  /** Fires the spell at `chargeFraction` (0..1, from how long cast was held
-   *  — see startCharge/releaseCharge). Cost/damage/radius all scale with it;
-   *  launch speed/arc don't (see the SPELL_MIN/MAX_* comment up top). */
+  /** Fires the spell at `chargeFraction` (0..1). Cost/damage/radius scale
+   *  with it; launch speed/arc don't (see the SPELL_MIN/MAX_* comment up top). */
   function castSpell(chargeFraction) {
-    // Guards against the desktop pointerdown / touch release handlers below,
-    // which aren't gated on gameOver the way the fixed-step input check is
-    // — without this, a post-death release would read the despawned
-    // player's (now invalid) transform slot.
+    // Guards the desktop/touch release handlers below, which aren't gated on
+    // gameOver the way the fixed-step input check is.
     if (gameOver || levelComplete) return;
 
     const cost = THREE.MathUtils.lerp(SPELL_MIN_COST, SPELL_MAX_COST, chargeFraction);
-    if (mana < SPELL_MIN_COST) return; // not even enough for the cheapest possible shot — fizzle silently
-    // A charge the player can't fully afford still fires, just scaled back
-    // to whatever mana actually covers, rather than doing nothing after a
-    // hold — spend-what-you-have instead of all-or-nothing.
+    if (mana < SPELL_MIN_COST) return; // not enough for even the cheapest shot
+    // A charge the player can't fully afford still fires, scaled back to
+    // whatever mana covers, rather than doing nothing.
     const actualCost = Math.min(cost, mana);
     const actualFraction = (actualCost - SPELL_MIN_COST) / (SPELL_MAX_COST - SPELL_MIN_COST);
     mana -= actualCost;
@@ -1578,20 +1387,12 @@ async function main() {
     const slot = transforms.slotOf(playerEntity);
     const o = slot * transforms.stride;
     const raw = transforms.raw;
-    // Local +X is this model's authored forward axis (see yawQuaternion's doc).
     const dir = new THREE.Vector3(1, 0, 0).applyQuaternion(playerFacing).normalize();
 
-    // Vertical look sets the launch angle, like winding up a catapult: aim
-    // the camera up for a steep, high lob, or down for a flatter, more
-    // direct shot. camPitch itself runs the opposite way (it's the camera's
-    // orbit elevation, which *increases* toward its overhead/looking-down
-    // extreme — see the mousemove handler's comment), so the launch angle
-    // mirrors it around the same [CAM_MIN_PITCH, CAM_MAX_PITCH] range.
-    // Charge sets both how hard it's thrown (speed — farther/faster the
-    // longer it was held) and, via gravityScale, how heavily it's pulled
-    // back down — a bigger charge is a bigger mass of energy, not just a
-    // faster-moving copy of a small one. Both combine with launchAngle to
-    // decide the actual arc/range; there's no fixed baseline either sums to.
+    // Vertical look sets the launch angle (aim up for a steep lob, down for
+    // flat); camPitch runs the opposite way (see the mousemove comment), so
+    // this mirrors it. Charge sets both speed and gravityScale together, so
+    // a bigger charge is a heavier throw, not just a faster small one.
     const launchAngle = CAM_MIN_PITCH + CAM_MAX_PITCH - camPitch;
     const speed = THREE.MathUtils.lerp(SPELL_MIN_SPEED, SPELL_MAX_SPEED, actualFraction);
     const gravityScale = THREE.MathUtils.lerp(SPELL_MIN_GRAVITY_SCALE, SPELL_MAX_GRAVITY_SCALE, actualFraction);
@@ -1599,12 +1400,9 @@ async function main() {
     const speedV = speed * Math.sin(launchAngle);
 
     const mesh = new THREE.Mesh(boltGeo, new THREE.MeshBasicMaterial({ color: boltColorMin.clone().lerp(boltColorMax, actualFraction) }));
-    mesh.scale.setScalar(radius * 1.4); // a bit bigger than the hit-test radius, so it reads clearly at a glance
+    mesh.scale.setScalar(radius * 1.4); // a bit bigger than the hit-test radius, so it reads clearly
     const glow = new THREE.PointLight(0xb87fff, 2 + actualFraction * 3, 6 + actualFraction * 4);
     mesh.add(glow);
-    // Spawn a little ahead of the player's own body (not inside it) and
-    // waist-high, so the bolt is visible leaving the caster instead of
-    // popping into view a moment later from inside the wizard mesh.
     const originX = raw[o] + dir.x * 0.8;
     const originZ = raw[o + 2] + dir.z * 0.8;
     const originY = raw[o + 1] + 1.1;
@@ -1632,9 +1430,7 @@ async function main() {
   }
 
   // --- Press-and-hold charge state machine: startCharge()/releaseCharge()
-  // are the only entry points every input scheme (keyboard Space, desktop
-  // pointer-lock click, touch hold) drives — see the input wiring above and
-  // the charge-visuals update in the main loop below. ---
+  // are the only entry points every input scheme drives. ---
   let charging = false;
   let chargeStartTime = 0;
 
@@ -1651,13 +1447,9 @@ async function main() {
     castSpell(THREE.MathUtils.clamp(heldSeconds / CHARGE_MAX_TIME, 0, 1));
   }
 
-  // A small glowing orb that grows at the caster's hand while charging, plus
-  // a semi-transparent line tracing where a shot fired *right now* would
-  // land — both driven by the current aim (camPitch/playerFacing), not by
-  // how much charge has built up yet, since charge only scales power, not
-  // trajectory (see the SPELL_MIN/MAX_* comment up top). Neither is a
-  // TweenRunner animation or an entity — just plain THREE objects toggled
-  // visible/invisible and repositioned every rendered frame.
+  // A glowing orb that grows at the caster's hand while charging, plus a
+  // trajectory preview line — both driven by current aim, not accumulated
+  // charge, since charge only scales power, not trajectory.
   const chargeOrb = new THREE.Mesh(
     new THREE.SphereGeometry(1, 12, 10),
     new THREE.MeshBasicMaterial({ color: 0xcf9bff, transparent: true, opacity: 0.85 }),
@@ -1680,9 +1472,8 @@ async function main() {
   trajectoryLine.visible = false;
   scene.add(trajectoryLine);
 
-  /** Called once per rendered frame (see the main loop) — updates the charge
-   *  orb, the trajectory preview line, and the HUD charge bar together, all
-   *  off the same `charging`/`chargeStartTime` state. */
+  /** Updates the charge orb, trajectory preview, and HUD charge bar together,
+   *  once per rendered frame, off the current charging/chargeStartTime state. */
   function updateChargeVisuals() {
     if (!charging) {
       chargeOrb.visible = false;
@@ -1696,7 +1487,7 @@ async function main() {
     chargeBarFill.style.width = `${fraction * 100}%`;
 
     const slot = transforms.slotOf(playerEntity);
-    if (slot === -1) return; // despawned mid-charge (died while holding) — nothing left to aim from
+    if (slot === -1) return; // despawned mid-charge — nothing left to aim from
     const o = slot * transforms.stride;
     const raw = transforms.raw;
     const dir = new THREE.Vector3(1, 0, 0).applyQuaternion(playerFacing);
@@ -1709,10 +1500,8 @@ async function main() {
     chargeOrb.scale.setScalar(THREE.MathUtils.lerp(0.18, 0.42, fraction));
     chargeGlow.intensity = THREE.MathUtils.lerp(0.4, 3, fraction);
 
-    // Same launch-angle/speed/gravity mapping as castSpell would use if
-    // released right now — see its comment — so the preview actually
-    // reflects where *this* shot, at its current charge, would land, and
-    // visibly stretches/sags further as the hold continues.
+    // Same launch-angle/speed/gravity mapping castSpell would use if
+    // released right now, so the preview reflects this shot's current charge.
     const launchAngle = CAM_MIN_PITCH + CAM_MAX_PITCH - camPitch;
     const speed = THREE.MathUtils.lerp(SPELL_MIN_SPEED, SPELL_MAX_SPEED, fraction);
     const gravity = GRAVITY * THREE.MathUtils.lerp(SPELL_MIN_GRAVITY_SCALE, SPELL_MAX_GRAVITY_SCALE, fraction);
@@ -1758,10 +1547,8 @@ async function main() {
       b.z += b.vz * dt;
       b.mesh.position.set(b.x, b.y, b.z);
 
-      // Ends the shot this tick — either dug into the terrain (arced back
-      // down) or flew far enough out that it's forced down regardless, so a
-      // very flat/fast shot can't sail on forever waiting for gravity to
-      // eventually win.
+      // Ends the shot: dug into the terrain, or flew far enough out to be
+      // forced down regardless (so a flat/fast shot can't sail forever).
       let impact = null;
       const groundY = groundHeight(b.x, b.z);
       if (b.y <= groundY) impact = { x: b.x, y: groundY, z: b.z };
@@ -1782,11 +1569,8 @@ async function main() {
 
       let hitEntity;
       if (!impact) {
-        // Generous query radius (has to cover the tallest target's full
-        // height above its ground point, not just b.radius) — narrowed to an
-        // actual hit by the horizontal + vertical-band check below, so a
-        // bolt still high in its arc passes over someone instead of
-        // "hitting" them from several units up.
+        // Generous query radius (must cover the tallest target's full
+        // height), narrowed to an actual hit by the vertical-band check below.
         const nearby = spatialGrid.queryRadius(transforms, b.x, b.y, b.z, b.radius + 2.6);
         for (let n = 0; n < nearby.length; n++) {
           const cand = nearby[n];
@@ -1824,11 +1608,9 @@ async function main() {
     }
   }
 
-  /** Area damage around an impact point (horizontal-only distance — a
-   *  ground-hugging blast, not a sphere), falling off linearly to 0 at
-   *  `radius`. `exclude` is the entity that already took a direct hit this
-   *  same impact, if any, so it doesn't also get splashed on top of that.
-   *  Returns the total amount actually applied, for stats.mostDamageSingleShot. */
+  /** Area damage around an impact point (horizontal-only distance), falling
+   *  off linearly to 0 at `radius`. `exclude` is the entity that already took
+   *  a direct hit this same impact. Returns total damage applied. */
   function applySplash(x, z, radius, damage, exclude) {
     if (radius <= 0 || damage <= 0) return 0;
     let total = 0;
@@ -1842,10 +1624,8 @@ async function main() {
       const raw = transforms.raw;
       const dist = Math.hypot(raw[cs] - x, raw[cs + 2] - z);
       if (dist > radius) continue;
-      // Curved, not linear, falloff (pow 0.6) — keeps damage meaningfully
-      // high through most of the radius and only drops off sharply right at
-      // the edge, so a splash reads as "everyone nearby got hit hard," not
-      // "only the exact center did."
+      // Curved (pow 0.6), not linear, falloff — stays high through most of
+      // the radius and drops sharply only right at the edge.
       const amount = damage * Math.pow(1 - dist / radius, 0.6);
       if (amount < 0.5) continue;
       world.events.emit({ type: 'damage', target: cand, amount });
@@ -1855,12 +1635,9 @@ async function main() {
     return total;
   }
 
-  // --- Splash rings: a quick expanding, fading ring of "energy" at an
-  // impact point, tracing the actual splash-damage radius rather than just
-  // an arbitrary decorative flourish. Plain array + per-frame update, same
-  // churny-non-entity reasoning as ParticleSystem/bolts — each ring gets its
-  // own cloned material purely so its opacity can fade independently of
-  // every other ring currently animating. ---
+  // --- Splash rings: a quick expanding, fading ring at an impact point,
+  // tracing the actual splash-damage radius. Each ring clones the base
+  // material so its opacity can fade independently of the others. ---
   const splashRings = [];
   const splashRingGeo = new THREE.RingGeometry(0.8, 1, 32);
   const splashRingBaseMat = new THREE.MeshBasicMaterial({
@@ -1896,16 +1673,9 @@ async function main() {
     }
   }
 
-  // --- Bone shards: skeleton.glb is a single merged mesh (one node, one
-  // primitive, no skin/bones — checked directly against the file), so there
-  // are no actual limb pieces to fly apart on death. This fakes a shatter
-  // instead, the same "plausible placeholder geometry" approach already used
-  // for the rock/pillar obstacles: a handful of tumbling debris (bone tint)
-  // flung outward and down, not a real fracture of the 143k-vertex mesh.
-  // Mostly long slender "bone" cylinders — the shape that actually reads as
-  // a skeleton breaking apart — with a minority of small chunks mixed in for
-  // variety, rather than every piece being identically stick-shaped. Same
-  // plain-array-of-plain-objects reasoning as splashRings/bolts. ---
+  // --- Bone shards: skeleton.glb is a single merged mesh with no actual limb
+  // pieces to fly apart, so this fakes a shatter — tumbling debris flung
+  // outward and down, mostly long "bone" cylinders with a few small chunks. ---
   const boneShards = [];
   const boneStickGeo = new THREE.CylinderGeometry(1, 1, 1, 6); // unit cylinder — scale.set(radius, length, radius) per instance
   const boneChunkGeo = new THREE.BoxGeometry(0.16, 0.16, 0.16);
@@ -1913,7 +1683,7 @@ async function main() {
 
   function spawnBoneShards(pos, count = 7) {
     for (let i = 0; i < count; i++) {
-      const isStick = Math.random() < 0.7; // mostly long bones, a few chunkier bits
+      const isStick = Math.random() < 0.7;
       const mesh = new THREE.Mesh(isStick ? boneStickGeo : boneChunkGeo, boneShardMat);
       if (isStick) {
         const radius = 0.035 + Math.random() * 0.03;
@@ -1927,7 +1697,7 @@ async function main() {
       scene.add(mesh);
 
       const theta = Math.random() * Math.PI * 2;
-      const phi = Math.acos(Math.random() * 0.7); // biased outward/upward, not straight down through the floor
+      const phi = Math.acos(Math.random() * 0.7); // biased outward/upward, not straight down
       const speed = 2.5 + Math.random() * 3.5;
       boneShards.push({
         mesh,
@@ -1947,7 +1717,7 @@ async function main() {
     for (let i = boneShards.length - 1; i >= 0; i--) {
       const s = boneShards[i];
       s.age += dt;
-      s.vy += GRAVITY * 0.4 * dt; // lighter fall than a spell bolt — small debris, not a lead weight
+      s.vy += GRAVITY * 0.4 * dt; // lighter fall than a spell bolt — small debris
       s.mesh.position.x += s.vx * dt;
       s.mesh.position.y += s.vy * dt;
       s.mesh.position.z += s.vz * dt;
@@ -1963,11 +1733,8 @@ async function main() {
   }
 
   // --- Necromancer's own attack: a small bolt straight at the player's
-  // position at the moment it's cast (not homing — a real, dodgeable
-  // straight line, same "visible tell, can be sidestepped" shape as the
-  // player's spell), fired every NECROMANCER_RITUALS_PER_SPELL-th completed
-  // ritual (see updateNecromancer). Same non-entity churny-projectile
-  // reasoning as the player's bolts array. ---
+  // position at cast time (not homing — dodgeable, like the player's own
+  // spell), fired every NECROMANCER_RITUALS_PER_SPELL-th completed ritual. ---
   const necromancerBolts = [];
   const necromancerBoltGeo = new THREE.SphereGeometry(0.3, 10, 8);
   const necromancerBoltMat = new THREE.MeshBasicMaterial({ color: 0x33ff88 });
@@ -2039,16 +1806,12 @@ async function main() {
     }
   }
 
-  // --- Necromancer state machine: plain game-loop state, not an ECS system
-  // or behavior tree — it only ever drives one entity and touches counters
-  // plus the spawn helper, nothing generic enough to justify either. ---
+  // --- Necromancer state machine: plain game-loop state, not ECS/behavior
+  // tree — it only ever drives one entity plus a few counters. ---
   let spawnTimer = 1.5; // first wave arrives quickly
 
   /** A handful of tries at a random point at least NECROMANCER_MIN_DISTANCE
-   *  from the player, so a fresh wander target doesn't just walk it straight
-   *  back into close range — falls back to whichever candidate ended up
-   *  farthest if none clear the threshold (a small/cornered arena position),
-   *  rather than looping indefinitely. */
+   *  from the player; falls back to the farthest candidate tried if none clear it. */
   function pickNecromancerWanderTarget() {
     const margin = 4;
     const pSlot = transforms.slotOf(playerEntity);
@@ -2076,10 +1839,8 @@ async function main() {
     necromancerWanderTarget = best;
   }
 
-  /** Cancels the in-progress ritual: any skeleton it already raised that
-   *  hasn't finished climbing out of the ground yet sinks back down and is
-   *  despawned (a completed rise, riseTimer <= 0, is already independent and
-   *  unaffected — only the interrupted-mid-animation ones are pulled). */
+  /** Cancels the in-progress ritual: any skeleton still mid-rise sinks back
+   *  down and despawns; already-completed ones are untouched. */
   function interruptRitual() {
     for (let i = 0; i < currentRitualSkeletons.length; i++) {
       const e = currentRitualSkeletons[i];
@@ -2117,11 +1878,8 @@ async function main() {
     const px = raw[o];
     const pz = raw[o + 2];
 
-    // The player closing distance always overrides the wander target — it
-    // never gets to just stroll toward wherever it was already headed while
-    // the player is right there. Once it's backed off, force a fresh target
-    // (pickNecromancerWanderTarget already biases away from the player) so
-    // it doesn't immediately walk straight back the moment this check clears.
+    // The player closing distance always overrides the wander target; once
+    // backed off, force a fresh target so it doesn't walk straight back.
     let dx;
     let dz;
     const pSlot = transforms.slotOf(playerEntity);
@@ -2161,12 +1919,8 @@ async function main() {
   function updateNecromancer(dt) {
     if (!necromancerAlive) return;
 
-    // A queued bolt (see the ritual branch below) fires the instant a clear
-    // shot opens up, whichever tick that turns out to be — checked here
-    // rather than only at the moment the ritual ends, since it can take
-    // wandering/fleeing around obstacles for a while before line of sight
-    // actually lines up. Not checked mid-ritual: it's standing still
-    // concentrating on the raising, not also lining up a shot.
+    // A queued bolt fires the instant a clear shot opens up — not checked
+    // mid-ritual, since it's standing still concentrating on the raising.
     if (necromancerWantsToFireBolt && necromancerState !== 'ritual') {
       const nSlot = transforms.slotOf(necromancerEntity);
       const pSlot = transforms.slotOf(playerEntity);
@@ -2182,22 +1936,15 @@ async function main() {
     }
 
     if (necromancerState === 'fleeing') {
-      // elapsed time *this* flee — always measured from the most recent
-      // hit, never the first: the 'damage' handler resets this to 0 on
-      // every hit, so a hit at 1.8s into an existing flee restarts the
-      // clock rather than topping up whatever was left.
+      // Always measured from the most recent hit — the 'damage' handler
+      // resets this to 0 on every hit, restarting the clock.
       necromancerFleeTimer += dt;
       const slot = transforms.slotOf(necromancerEntity);
       const o = slot * transforms.stride;
       const raw = transforms.raw;
 
-      // Away-from-player is recomputed here every tick from the player's
-      // *current* position — not a direction frozen at hit-time — so it
-      // keeps adjusting if the player moves during the flee instead of
-      // committing to whatever was true the instant it got hit. Blended
-      // with the direction toward the fixed cover target (picked once, in
-      // the 'damage' handler) so it's generally still making for the same
-      // patch of cover rather than beelining straight away in the open.
+      // Away-from-player is recomputed live each tick, blended with the
+      // direction toward the fixed cover target picked at hit-time.
       let dirX = 0;
       let dirZ = 0;
       const pSlotForDir = transforms.slotOf(playerEntity);
@@ -2227,8 +1974,7 @@ async function main() {
       ({ x: nx, z: nz } = resolveObstacles(nx, nz, NECROMANCER_RADIUS));
       nx = THREE.MathUtils.clamp(nx, -ARENA_HALF + 2, ARENA_HALF - 2);
       nz = THREE.MathUtils.clamp(nz, -ARENA_HALF + 2, ARENA_HALF - 2);
-      // Faces the direction it's fleeing, not the player, unlike every other
-      // state — it's running, not watching over its shoulder.
+      // Faces the direction it's fleeing, not the player, unlike every other state.
       transforms.add(necromancerEntity, nx, groundHeight(nx, nz), nz, ...quatArray(yawQuaternion(dirX, dirZ)));
 
       const pSlot = transforms.slotOf(playerEntity);
@@ -2246,11 +1992,6 @@ async function main() {
     }
 
     if (necromancerState === 'ritual') {
-      // Stands still — see the class comment above NECROMANCER_MAX_HP — while
-      // its skeletons rise on a staggered schedule (spawnSkeleton itself
-      // reads the necromancer's current position, so this works from
-      // wherever it happened to be standing when the ritual started). Still
-      // faces the player throughout, same as every other state.
       const slot = transforms.slotOf(necromancerEntity);
       const o = slot * transforms.stride;
       const raw = transforms.raw;
@@ -2265,13 +2006,11 @@ async function main() {
       }
       necromancerRitualTimer -= dt;
       if (necromancerRitualTimer <= 0) {
-        currentRitualSkeletons.length = 0; // whatever's left in here finished rising on its own
+        currentRitualSkeletons.length = 0; // whatever's left finished rising on its own
         necromancerState = 'wandering';
         spawnTimer = NECROMANCER_SPAWN_INTERVAL;
         pickNecromancerWanderTarget();
-        // Only a ritual that actually finished counts — one cut short by
-        // interruptRitual (the player fighting back mid-raise) shouldn't
-        // still build toward the attack it's being interrupted to prevent.
+        // Only a ritual that finished counts, not one cut short by interruptRitual.
         necromancerRitualsCompleted++;
         if (necromancerRitualsCompleted % NECROMANCER_RITUALS_PER_SPELL === 0) necromancerWantsToFireBolt = true;
       }
@@ -2317,23 +2056,15 @@ async function main() {
     }
   }
 
-  /** Unconditional cleanup pass: removes any spawnStatic-created mesh that's
-   *  no longer the current mesh of a live entity — i.e. anything visible in
-   *  the scene that none of the engine's own entity/ai/healthbar counts (see
-   *  DebugOverlay) actually account for. Every normal despawn path already
-   *  removes its own mesh (the 'died' handler, interruptRitual's sink), so
-   *  in the common case this finds nothing and is a cheap no-op; it exists
-   *  as a backstop against the specific "a mesh visibly outlives its entity"
-   *  failure mode — whatever exact sequence causes that, this guarantees it
-   *  can't persist past one frame instead of needing that sequence found and
-   *  fixed precisely. A mesh mid-interruptRitual sink is deliberately still
-   *  owned by nothing (its entity is already despawned) but isn't an orphan
-   *  — it's excluded via the sinkingSkeletons check below. */
+  /** Backstop cleanup: removes any spawnStatic-created mesh no longer owned
+   *  by a live entity. Normal despawn paths already remove their own mesh, so
+   *  this is usually a no-op — it exists against "a mesh visibly outlives its
+   *  entity" regardless of exact cause. */
   function sweepOrphanedMeshes() {
     for (const obj of spawnedCharacterMeshes) {
       const e = obj.userData.ownerEntity;
       if (meshes.get(e) === obj) continue; // still the live mesh for a live entity
-      if (sinkingSkeletons.some((s) => s.mesh === obj)) continue; // mid its own intentional removal animation
+      if (sinkingSkeletons.some((s) => s.mesh === obj)) continue; // mid its own removal animation
       scene.remove(obj);
       spawnedCharacterMeshes.delete(obj);
     }
@@ -2364,16 +2095,10 @@ async function main() {
       });
     }
 
-    // Purely decorative — particles, splash rings, sinking/interrupted
-    // skeletons, bone shards, the damage-taken screen flash — keep animating
-    // every rendered frame regardless of gameOver/levelComplete, using real
-    // dt rather than fixed dt (nothing here feeds back into gameplay, so
-    // fixed-timestep determinism doesn't matter for it). Gating these the
-    // same as the sim meant anything mid-animation at the exact moment the
-    // game ended — most visibly the player's own death burst — froze
-    // permanently instead of finishing: a handful of light-blue particles
-    // stuck hanging in the air a few inches from the death spot, having
-    // gotten exactly one fixed step of motion before the freeze.
+    // Purely decorative effects keep animating every rendered frame
+    // regardless of gameOver/levelComplete (on real dt, not fixed dt) — gating
+    // these the same as the sim used to freeze anything mid-animation, like
+    // the player's own death burst, the instant the game ended.
     updateSplashRings(dt);
     updateHitFlashes(dt);
     updateSinkingSkeletons(dt);
