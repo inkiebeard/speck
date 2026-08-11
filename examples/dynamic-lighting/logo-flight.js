@@ -17,6 +17,10 @@ import {
   ArrayComponentStore,
   SpatialGrid,
   GltfLoader,
+  SimplexNoise,
+  fbm2D,
+  poissonDiskSample2D,
+  createRng,
 } from '../../dist/speck.js';
 
 // --- Flight tuning ---------------------------------------------------------
@@ -55,7 +59,24 @@ const GIANT_FIXED_POSITIONS = [
 const FOOTPRINT_RADIUS_FACTOR = 1.6;
 const OBSTACLE_HEIGHT_FACTOR = 1.6;
 const PLACEMENT_PADDING = 3;
-const PLACEMENT_ATTEMPTS = 150;
+
+// Candidate spacing fed into poissonDiskSample2D (see buildLogoInstances) —
+// deliberately smaller than any real footprint gap so the candidate field
+// is dense; the actual minimum separation is enforced per-candidate against
+// each placement's real (randomly scaled) radius, not by this alone.
+const PLACEMENT_CANDIDATE_SPACING = 12;
+const PLACEMENT_SEED = 20260811;
+
+// Both the terrain shape and the sculpture scatter are seeded (see
+// TERRAIN_NOISE_SEED, PLACEMENT_SEED) rather than left to Math.random, so
+// the landscape and layout are the same on every load — useful for sharing
+// a specific run or diffing a tuning change against a fixed baseline.
+const TERRAIN_NOISE_SEED = 1337;
+const TERRAIN_NOISE_FREQUENCY = 0.02;
+const TERRAIN_NOISE_OCTAVES = 4;
+const TERRAIN_NOISE_LACUNARITY = 2;
+const TERRAIN_NOISE_PERSISTENCE = 0.5;
+const TERRAIN_HEIGHT_SCALE = 5.6; // matches the amplitude of the sin/cos terrain this replaced
 
 // Real PointLight per drop block, deliberately weak (a "field of embers") —
 // FIELD_LIGHTS/ROVER_LIGHTS are the scene's dominant light sources. Scaled
@@ -63,10 +84,21 @@ const PLACEMENT_ATTEMPTS = 150;
 const DROP_LIGHT_INTENSITY = 3.5;
 const DROP_LIGHT_DISTANCE = 7;
 
+const terrainNoise = new SimplexNoise(TERRAIN_NOISE_SEED);
+
 /** Rolling hills shared by the terrain mesh, sculpture placement, and the
- *  flight camera's ground-clearance clamp. */
+ *  flight camera's ground-clearance clamp. fbm2D over the engine's own
+ *  SimplexNoise (src/core/noise.ts) — Three.js has no noise of its own —
+ *  in place of the hand-tuned sin/cos stack this used to be. */
 function terrainHeight(x, z) {
-  return Math.sin(x * 0.045) * 2.2 + Math.cos(z * 0.05) * 2.0 + Math.sin((x + z) * 0.02) * 1.4;
+  return (
+    fbm2D(terrainNoise, x, z, {
+      frequency: TERRAIN_NOISE_FREQUENCY,
+      octaves: TERRAIN_NOISE_OCTAVES,
+      lacunarity: TERRAIN_NOISE_LACUNARITY,
+      persistence: TERRAIN_NOISE_PERSISTENCE,
+    }) * TERRAIN_HEIGHT_SCALE
+  );
 }
 
 const GLB_URL = './logo.glb';
@@ -74,6 +106,11 @@ const GLB_URL = './logo.glb';
 const GROUND_CLEARANCE = 3;
 const MAX_ALTITUDE = 55; // deliberately low — a terrain-hugging flight, not a high overview
 const BOUNDARY_XZ = TERRAIN_HALF + 40;
+
+// Every shadow-casting light needs both of these or its shadow map
+// self-intersects the flat faces it's lighting — "shadow acne"
+const SHADOW_BIAS = -0.001;
+const SHADOW_NORMAL_BIAS = 0.02;
 
 // height is relative to local terrain height, not world altitude, so each
 // light hugs whatever hill it's currently crossing.
@@ -88,8 +125,8 @@ const FIELD_LIGHTS = [
 // Wander only between the 5 giants, slower and much larger — the terrain's
 // grand-tour showpiece lights.
 const ROVER_LIGHTS = [
-  { color: 0xfff2cf, speed: 4, height: 20, intensity: 260, distance: 320, markerRadius: 3.2 },
-  { color: 0xcfe8ff, speed: 3.4, height: 24, intensity: 260, distance: 320, markerRadius: 3.2 },
+  { color: 0xfff2cf, speed: 4, height: 20, intensity: 260, distance: 320, markerRadius: 3.2, shadow: true },
+  { color: 0xcfe8ff, speed: 3.4, height: 24, intensity: 260, distance: 320, markerRadius: 3.2, shadow: true },
 ];
 const WAYPOINT_ARRIVAL_DISTANCE = 4;
 // Arrival is measured from a destination's avoidance edge, not its
@@ -134,7 +171,11 @@ function createStarfield(count, minRadius, maxRadius) {
   return new THREE.Points(geo, mat);
 }
 
+/** Builds the terrain mesh, sampling terrainHeight (fbm2D over
+ *  SimplexNoise) per vertex. Returns the generation time alongside the mesh
+ *  so main() can surface it in the debug HUD. */
 function buildTerrain() {
+  const start = performance.now();
   const geo = new THREE.PlaneGeometry(TERRAIN_SIZE, TERRAIN_SIZE, TERRAIN_SEGMENTS, TERRAIN_SEGMENTS);
   geo.rotateX(-Math.PI / 2);
   const pos = geo.attributes.position;
@@ -143,7 +184,8 @@ function buildTerrain() {
   }
   geo.computeVertexNormals();
   const mat = new THREE.MeshStandardMaterial({ color: 0x171826, roughness: 0.95, metalness: 0.05 });
-  return new THREE.Mesh(geo, mat);
+  const mesh = new THREE.Mesh(geo, mat);
+  return { mesh, ms: performance.now() - start };
 }
 
 /** The two tangent points from external point (px, pz) to circle (cx, cz,
@@ -284,10 +326,9 @@ async function loadGlbTemplate() {
 }
 
 /** Places LOGO_COUNT clones of logo.glb across the terrain: GIANT_COUNT
- *  giants at a fixed layout, everyone else rejection-sampled into the open
- *  ground around them. Each instance plays its own phase-offset bounce
- *  animation and carries a real PointLight on its green drop block. Returns
- *  allPositions (every sculpture) and giantPositions (just the 5 giants). */
+ *  giants at a fixed layout, everyone else scattered via poissonDiskSample2D
+ *  (blue noise) around them.
+ */
 async function buildLogoInstances(scene) {
   const glb = await loadGlbTemplate();
 
@@ -297,6 +338,8 @@ async function buildLogoInstances(scene) {
     scene.add(light);
     dropLights[i] = light;
   }
+
+  const placementStart = performance.now();
 
   const giantPositions = [];
   const placements = new Array(LOGO_COUNT); // { x, z, scale, yaw }
@@ -322,34 +365,62 @@ async function buildLogoInstances(scene) {
     giantPositions.push(pushFootprint(pos.x, pos.z, scale));
   }
 
-  for (let idx = GIANT_COUNT; idx < LOGO_COUNT; idx++) {
+  const scatterExtent = TERRAIN_SIZE * SCATTER_MARGIN;
+  const scatterOffset = scatterExtent / 2;
+  const candidatePoints = poissonDiskSample2D({
+    width: scatterExtent,
+    height: scatterExtent,
+    minDistance: PLACEMENT_CANDIDATE_SPACING,
+    rng: createRng(PLACEMENT_SEED),
+  });
+  // Shuffled with a second seeded stream so *which* candidates end up used
+  // is reproducible too, not just where the candidate field's points sit.
+  const shuffleRng = createRng(PLACEMENT_SEED + 1);
+  for (let i = candidatePoints.length - 1; i > 0; i--) {
+    const j = Math.floor(shuffleRng() * (i + 1));
+    const tmp = candidatePoints[i];
+    candidatePoints[i] = candidatePoints[j];
+    candidatePoints[j] = tmp;
+  }
+
+  let placedCount = GIANT_COUNT;
+  for (const [px, pz] of candidatePoints) {
+    if (placedCount >= LOGO_COUNT) break;
+    const x = px - scatterOffset;
+    const z = pz - scatterOffset;
     const scale = THREE.MathUtils.lerp(NORMAL_SCALE_RANGE[0], NORMAL_SCALE_RANGE[1], Math.random());
     const radius = scale * FOOTPRINT_RADIUS_FACTOR;
-    // Rejection-sample up to PLACEMENT_ATTEMPTS times, tracking the
-    // least-overlapping attempt as a fallback rather than the last one
-    // tried (an overlapping fallback used to read as a broken sculpture).
-    let x = 0;
-    let z = 0;
-    let bestX = 0;
-    let bestZ = 0;
-    let bestClearance = -Infinity;
-    for (let attempt = 0; attempt < PLACEMENT_ATTEMPTS; attempt++) {
-      x = (Math.random() - 0.5) * TERRAIN_SIZE * SCATTER_MARGIN;
-      z = (Math.random() - 0.5) * TERRAIN_SIZE * SCATTER_MARGIN;
-      let clearance = Infinity;
-      for (const f of placedFootprints) {
-        clearance = Math.min(clearance, Math.hypot(x - f.x, z - f.z) - (radius + f.radius + PLACEMENT_PADDING));
+    // The candidate field's own spacing only guarantees PLACEMENT_CANDIDATE_SPACING
+    let clear = true;
+    for (const f of placedFootprints) {
+      if (Math.hypot(x - f.x, z - f.z) < radius + f.radius + PLACEMENT_PADDING) {
+        clear = false;
+        break;
       }
-      if (clearance > bestClearance) {
-        bestClearance = clearance;
-        bestX = x;
-        bestZ = z;
-      }
-      if (clearance >= 0) break;
     }
-    placements[idx] = { x: bestX, z: bestZ, scale, yaw: Math.random() * Math.PI * 2 };
-    pushFootprint(bestX, bestZ, scale);
+    if (!clear) continue;
+    placements[placedCount] = { x, z, scale, yaw: Math.random() * Math.PI * 2 };
+    pushFootprint(x, z, scale);
+    placedCount++;
   }
+  // Safety net only — the candidate field is generated far denser than
+  // LOGO_COUNT needs
+  if (placedCount < LOGO_COUNT) {
+    console.warn(
+      `logo-flight: blue-noise scatter only placed ${placedCount}/${LOGO_COUNT} sculptures; ` +
+        `filling the rest without a clearance check`,
+    );
+    while (placedCount < LOGO_COUNT) {
+      const x = (Math.random() - 0.5) * scatterExtent;
+      const z = (Math.random() - 0.5) * scatterExtent;
+      const scale = THREE.MathUtils.lerp(NORMAL_SCALE_RANGE[0], NORMAL_SCALE_RANGE[1], Math.random());
+      placements[placedCount] = { x, z, scale, yaw: Math.random() * Math.PI * 2 };
+      pushFootprint(x, z, scale);
+      placedCount++;
+    }
+  }
+
+  const placementMs = performance.now() - placementStart;
 
   const glbInstances = []; // { mixer, greenNode, lightIndex } per instance
 
@@ -395,7 +466,13 @@ async function buildLogoInstances(scene) {
     }
   }
 
-  return { updateDropBlocks, giantPositions, allPositions: placedFootprints, footprints: placedFootprints };
+  return {
+    updateDropBlocks,
+    giantPositions,
+    allPositions: placedFootprints,
+    footprints: placedFootprints,
+    placementMs,
+  };
 }
 
 async function main() {
@@ -421,11 +498,12 @@ async function main() {
   scene.add(starlight, starlight.target);
   scene.add(createStarfield(2600, 450, 820));
 
-  const terrain = buildTerrain();
+  const { mesh: terrain, ms: terrainMs } = buildTerrain();
   terrain.receiveShadow = true;
   scene.add(terrain);
-  const { updateDropBlocks, giantPositions, allPositions, footprints } = await buildLogoInstances(scene);
+  const { updateDropBlocks, giantPositions, allPositions, footprints, placementMs } = await buildLogoInstances(scene);
   const { findBlocker, stats: avoidanceStats } = buildObstacleAvoidance(footprints);
+  const genStatsLine = `terrain ${terrainMs.toFixed(1)}ms  placement ${placementMs.toFixed(1)}ms`;
 
   function pickNextIndex(positions, excludeIndex) {
     if (positions.length <= 1) return 0;
@@ -451,6 +529,8 @@ async function main() {
       light.shadow.mapSize.set(512, 512);
       light.shadow.camera.near = 0.5;
       light.shadow.camera.far = 80;
+      light.shadow.bias = SHADOW_BIAS;
+      light.shadow.normalBias = SHADOW_NORMAL_BIAS;
     }
     const marker = new THREE.Mesh(
       new THREE.SphereGeometry(spec.markerRadius, 16, 12),
@@ -486,6 +566,8 @@ async function main() {
   headlight.shadow.mapSize.set(1024, 1024);
   headlight.shadow.camera.near = 0.5;
   headlight.shadow.camera.far = 130;
+  headlight.shadow.bias = SHADOW_BIAS;
+  headlight.shadow.normalBias = SHADOW_NORMAL_BIAS;
   camera.add(headlight);
 
   const startZ = TERRAIN_HALF * 0.7;
@@ -682,7 +764,8 @@ async function main() {
         `${fps} fps\n` +
         `${info.calls} calls  ${(info.triangles / 1000).toFixed(1)}k tris\n` +
         `${totalLightCount} lights  ${shadowLightCount} shadowed\n` +
-        `avoid queries ${avoidanceStats.queries}  last ${avoidanceStats.lastCandidates}  Σ ${avoidanceStats.totalCandidates}`;
+        `avoid queries ${avoidanceStats.queries}  last ${avoidanceStats.lastCandidates}  Σ ${avoidanceStats.totalCandidates}\n` +
+        `gen: ${genStatsLine}`;
       fpsAcc = 0;
       fpsFrames = 0;
       fpsTimer = 0;

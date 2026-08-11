@@ -9,6 +9,7 @@ export * from './core/tween';
 export * from './core/fixed-step';
 export * from './core/world';
 export * from './core/preloader';
+export * from './core/noise';
 
 // Components
 export * from './components/transform';

@@ -2,8 +2,8 @@
 
 The ECS substrate everything else sits on: entities, component storage,
 the event queue, `World`, `SpatialGrid`, `FixedStep`, `TweenRunner`,
-`Preloader`. See the top-level README for what each piece *is* — this is
-about using them well.
+`Preloader`, `SimplexNoise`. See the top-level README for what each piece
+*is* — this is about using them well.
 
 ## Best practices
 
@@ -25,6 +25,11 @@ about using them well.
 - Keep `Preloader` task weights honest. A batch of one huge task and several
   tiny ones will read as "done" prematurely if the tiny ones are weighted
   the same as the huge one.
+- Always construct `SimplexNoise` and call `poissonDiskSample2D` with an
+  explicit seed (or a shared `Rng` from `createRng`) rather than the
+  defaults, if the output needs to be reproducible across runs — a level
+  seed, a save file, or a networked map all depend on this. `../../tests/noise/`
+  covers the determinism/bounds/minimum-distance contract this relies on.
 
 ## Trade-offs
 

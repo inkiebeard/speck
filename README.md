@@ -17,7 +17,7 @@ trade-offs, and gotchas specific to that part of the stack.
 
 | Directory | Covers |
 | --- | --- |
-| [`src/core/`](src/core/README.md) | ECS core, `World`, `EventQueue`, `SpatialGrid`, `FixedStep`, `TweenRunner`, `Preloader` |
+| [`src/core/`](src/core/README.md) | ECS core, `World`, `EventQueue`, `SpatialGrid`, `FixedStep`, `TweenRunner`, `Preloader`, `SimplexNoise` |
 | [`src/components/`](src/components/README.md) | `TransformStore` |
 | [`src/physics/`](src/physics/README.md) | `PhysicsSystem` (Rapier adapter) |
 | [`src/rendering/`](src/rendering/README.md) | `InstancedRenderer`, `ParticleSystem`, `GltfLoader` |
@@ -210,6 +210,21 @@ trade-offs, and gotchas specific to that part of the stack.
      still sum past clipping. On by default; `{ limiter: false }` opts out
      (e.g. for a project managing its own master bus via `listener.setFilter`,
      since that call replaces whatever filter is already set, including this one).
+10. **Noise** (`SimplexNoise`, `fbm2D`/`fbm3D`, `poissonDiskSample2D`,
+    `noise.ts`) — procedural generation primitives for terrain and
+    placement. Three.js provides none of this. `SimplexNoise` is a seeded,
+    dependency-free simplex implementation (2D + 3D); `fbm2D`/`fbm3D` layer
+    it into fractal Brownian motion for terrain-like heightmaps and density
+    fields. `poissonDiskSample2D` is a separate, unrelated technique for a
+    related problem — evenly-spread ("blue noise") point placement (trees,
+    rocks, spawn points) via Bridson's dart-throwing algorithm, rather than
+    a raw random scatter, which clumps and leaves gaps at the same density.
+    Everything here is seeded through `Rng`/`createRng` rather than
+    `Math.random`, so terrain and placement are reproducible from a level
+    seed. `examples/dynamic-lighting/logo-flight.js` uses both: `fbm2D` for
+    its rolling terrain, `poissonDiskSample2D` for scattering sculptures
+    across it. Correctness (not perf) is covered by `tests/noise/` — see
+    Tests below.
 
 ## Why the packed layout
 
@@ -252,6 +267,21 @@ npm run example     # builds, then serves the repo root statically
 ```
 
 Then open `http://localhost:<port>/examples/matching-game.html`.
+
+## Tests
+
+Playwright, run against the *built* `dist/speck.js` (not source — see
+`playwright.config.ts`) via a shared harness that loads it as a real ES
+module: `npm test` runs everything; `npm run test:perf` / `npm run
+test:noise` scope to one suite. Both rebuild first (`pretest*` hooks).
+
+- `tests/perf/` — scaling benchmarks for hot paths (`TransformStore`-backed
+  systems, `SpatialGrid`, `InstancedRenderer`, `PhysicsSystem`). Loose
+  ceilings meant to catch a pathological regression (an accidental
+  per-tick allocation, an O(n²) creeping in), not ordinary run-to-run noise.
+- `tests/noise/` — correctness tests for `src/core/noise.ts`: determinism
+  given a seed, output staying in range, and `poissonDiskSample2D`'s
+  minimum-distance guarantee.
 
 ## The matching game demo (see `examples/matching-game.js`)
 
