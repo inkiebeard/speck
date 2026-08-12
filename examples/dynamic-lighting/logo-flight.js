@@ -8,6 +8,15 @@
  * Run `npm run build` first, then serve the repo root statically and open
  * logo-flight.html.
  */
+// Vector math note: world-space position/velocity/direction math below uses
+// the engine's own Vec3 (src/core/vector.ts) rather than THREE.Vector3 —
+// Vec3 has zero dependency on three (this engine treats three as an
+// optional peer, confined to rendering/audio; see src/index.ts), so game
+// logic written against it stays portable to a headless/server context that
+// never loads three at all. THREE.Vector3/Quaternion are still used for the
+// handful of spots tied directly to the camera/scene graph or a
+// three-specific operation (applyQuaternion) — Vec3 deliberately doesn't
+// reimplement those.
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.1/build/three.module.js';
 import {
   InputBuffer,
@@ -17,10 +26,12 @@ import {
   ArrayComponentStore,
   SpatialGrid,
   GltfLoader,
+  Preloader,
   SimplexNoise,
   fbm2D,
   poissonDiskSample2D,
   createRng,
+  Vec3,
 } from '../../dist/speck.js';
 
 // --- Flight tuning ---------------------------------------------------------
@@ -104,7 +115,7 @@ function terrainHeight(x, z) {
 const GLB_URL = './logo.glb';
 
 const GROUND_CLEARANCE = 3;
-const MAX_ALTITUDE = 55; // deliberately low — a terrain-hugging flight, not a high overview
+const MAX_ALTITUDE = 155; // deliberately low — a terrain-hugging flight, not a high overview
 const BOUNDARY_XZ = TERRAIN_HALF + 40;
 
 // Every shadow-casting light needs both of these or its shadow map
@@ -141,6 +152,7 @@ const AVOIDANCE_CELL_SIZE = 60;
 // Minimum gap a new detour point must keep from ones already visited this
 // trip (see chooseDetourPoint) — stops ping-ponging between two close points.
 const MIN_DETOUR_SEPARATION = AVOIDANCE_CLEARANCE * 2;
+const MIN_DETOUR_SEPARATION_SQ = MIN_DETOUR_SEPARATION * MIN_DETOUR_SEPARATION;
 const RECENT_DETOURS_LIMIT = 6; // reset whenever a new destination is picked
 // Growth per consecutive "both candidates too close to history" result,
 // capped so a wanderer can't spiral into a wastefully huge search radius.
@@ -188,14 +200,20 @@ function buildTerrain() {
   return { mesh, ms: performance.now() - start };
 }
 
+// Scratch vectors for tangentPointsOnCircle/chooseDetourPoint — both operate
+// purely in the XZ plane (y left at 0) and are called often enough during
+// active avoidance to be worth not allocating per call.
+const _tangentDiff = new Vec3();
+const _detourScratchA = new Vec3();
+const _detourScratchB = new Vec3();
+
 /** The two tangent points from external point (px, pz) to circle (cx, cz,
  *  r). Returns null if (px, pz) is inside the circle. */
 function tangentPointsOnCircle(px, pz, cx, cz, r) {
-  const dx = px - cx;
-  const dz = pz - cz;
-  const d = Math.hypot(dx, dz);
+  _tangentDiff.set(px - cx, 0, pz - cz);
+  const d = _tangentDiff.length();
   if (d <= r) return null;
-  const angleToPoint = Math.atan2(dz, dx);
+  const angleToPoint = Math.atan2(_tangentDiff.z, _tangentDiff.x);
   const halfAngle = Math.acos(r / d);
   return [
     { x: cx + r * Math.cos(angleToPoint + halfAngle), z: cz + r * Math.sin(angleToPoint + halfAngle) },
@@ -212,23 +230,22 @@ function chooseDetourPoint(px, pz, cx, cz, r, desiredX, desiredZ, recentDetours)
   if (!candidates) return null;
 
   function turnScore(point) {
-    const tx = point.x - px;
-    const tz = point.z - pz;
-    const len = Math.hypot(tx, tz) || 1e-6;
-    return (tx / len) * desiredX + (tz / len) * desiredZ; // 1 = no turn, -1 = doubling back
+    const t = _detourScratchA.set(point.x - px, 0, point.z - pz).normalize();
+    return t.x * desiredX + t.z * desiredZ; // 1 = no turn, -1 = doubling back
   }
-  function nearestHistoryDist(point) {
+  function nearestHistoryDistSq(point) {
+    _detourScratchA.set(point.x, 0, point.z);
     let min = Infinity;
-    for (const p of recentDetours) min = Math.min(min, Math.hypot(point.x - p.x, point.z - p.z));
+    for (const p of recentDetours) min = Math.min(min, _detourScratchA.distanceToSquared(_detourScratchB.set(p.x, 0, p.z)));
     return min;
   }
 
-  const clearOfHistory = candidates.filter((c) => nearestHistoryDist(c) >= MIN_DETOUR_SEPARATION);
+  const clearOfHistory = candidates.filter((c) => nearestHistoryDistSq(c) >= MIN_DETOUR_SEPARATION_SQ);
   if (clearOfHistory.length > 0) {
     clearOfHistory.sort((a, b) => turnScore(b) - turnScore(a));
     return { point: clearOfHistory[0], escalate: false };
   }
-  const fallback = nearestHistoryDist(candidates[0]) >= nearestHistoryDist(candidates[1]) ? candidates[0] : candidates[1];
+  const fallback = nearestHistoryDistSq(candidates[0]) >= nearestHistoryDistSq(candidates[1]) ? candidates[0] : candidates[1];
   return { point: fallback, escalate: true };
 }
 
@@ -251,6 +268,8 @@ function buildObstacleAvoidance(footprints) {
 
   const candidates = []; // reused across calls
   const stats = { queries: 0, lastCandidates: 0, totalCandidates: 0 };
+  const blockerClosest = new Vec3(); // scratch, reused per candidate
+  const blockerObstacle = new Vec3();
 
   function findBlocker(x, y, z, dirX, dirZ, maxDist) {
     spatialGrid.queryRadius(transforms, x, y, z, AVOIDANCE_LOOKAHEAD, candidates);
@@ -274,10 +293,10 @@ function buildObstacleAvoidance(footprints) {
       const toObstacleX = cx - x;
       const toObstacleZ = cz - z;
       const t = THREE.MathUtils.clamp(toObstacleX * dirX + toObstacleZ * dirZ, 0, maxDist);
-      const closestX = x + dirX * t;
-      const closestZ = z + dirZ * t;
-      const perpDist = Math.hypot(cx - closestX, cz - closestZ);
-      if (perpDist >= avoidRadius) continue; // ray passes clear of it
+      blockerClosest.set(x + dirX * t, 0, z + dirZ * t);
+      blockerObstacle.set(cx, 0, cz);
+      const perpDistSq = blockerClosest.distanceToSquared(blockerObstacle);
+      if (perpDistSq >= avoidRadius * avoidRadius) continue; // ray passes clear of it
       if (t < nearestT) {
         nearestT = t;
         nearest = { x: cx, z: cz, avoidRadius };
@@ -299,9 +318,9 @@ const GLB_GREY_NODE_NAMES = ['Cube', 'Cube001', 'Cube002', 'Cube003'];
  *  its actual geometry, so buildLogoInstances can scale instances
  *  correctly. Strips embedded lights (Blender exports watts, wildly too
  *  strong for three.js's punctual-light units). */
-async function loadGlbTemplate() {
+async function loadGlbTemplate(onProgress) {
   const loader = new GltfLoader();
-  const gltf = await loader.load(GLB_URL);
+  const gltf = await loader.load(GLB_URL, onProgress);
   const template = gltf.scene;
 
   const lights = [];
@@ -329,8 +348,8 @@ async function loadGlbTemplate() {
  *  giants at a fixed layout, everyone else scattered via poissonDiskSample2D
  *  (blue noise) around them.
  */
-async function buildLogoInstances(scene) {
-  const glb = await loadGlbTemplate();
+async function buildLogoInstances(scene, onProgress) {
+  const glb = await loadGlbTemplate(onProgress);
 
   const dropLights = new Array(LOGO_COUNT);
   for (let i = 0; i < LOGO_COUNT; i++) {
@@ -383,6 +402,8 @@ async function buildLogoInstances(scene) {
     candidatePoints[j] = tmp;
   }
 
+  const clearanceA = new Vec3(); // scratch, reused per candidate/footprint pair
+  const clearanceB = new Vec3();
   let placedCount = GIANT_COUNT;
   for (const [px, pz] of candidatePoints) {
     if (placedCount >= LOGO_COUNT) break;
@@ -392,8 +413,9 @@ async function buildLogoInstances(scene) {
     const radius = scale * FOOTPRINT_RADIUS_FACTOR;
     // The candidate field's own spacing only guarantees PLACEMENT_CANDIDATE_SPACING
     let clear = true;
+    clearanceA.set(x, 0, z);
     for (const f of placedFootprints) {
-      if (Math.hypot(x - f.x, z - f.z) < radius + f.radius + PLACEMENT_PADDING) {
+      if (clearanceA.distanceTo(clearanceB.set(f.x, 0, f.z)) < radius + f.radius + PLACEMENT_PADDING) {
         clear = false;
         break;
       }
@@ -485,6 +507,22 @@ async function main() {
   gl.shadowMap.type = THREE.PCFSoftShadowMap;
   document.body.appendChild(gl.domElement);
 
+  // --- Loading screen, driven by Preloader below ---
+  const loadingEl = document.createElement('div');
+  loadingEl.style.cssText =
+    'position: fixed; inset: 0; z-index: 10000; display: flex; flex-direction: column; ' +
+    'align-items: center; justify-content: center; gap: 12px; background: #000002; ' +
+    'font: 14px/1.4 monospace; color: #cfe;';
+  const loadingLabel = document.createElement('div');
+  loadingLabel.textContent = 'Loading…';
+  const barTrack = document.createElement('div');
+  barTrack.style.cssText = 'width: 240px; height: 8px; border-radius: 4px; background: #222; overflow: hidden;';
+  const barFill = document.createElement('div');
+  barFill.style.cssText = 'width: 0%; height: 100%; background: #66ff44; transition: width 80ms linear;';
+  barTrack.appendChild(barFill);
+  loadingEl.append(loadingLabel, barTrack);
+  document.body.appendChild(loadingEl);
+
   addEventListener('resize', () => {
     camera.aspect = innerWidth / innerHeight;
     camera.updateProjectionMatrix();
@@ -498,10 +536,32 @@ async function main() {
   scene.add(starlight, starlight.target);
   scene.add(createStarfield(2600, 450, 820));
 
-  const { mesh: terrain, ms: terrainMs } = buildTerrain();
+  const preloader = new Preloader();
+  preloader.onProgress(({ fraction }) => {
+    barFill.style.width = `${(fraction * 100).toFixed(1)}%`;
+  });
+
+  const { terrain: terrainResult, sculptures } = await preloader.load(
+    {
+      // Synchronous and fast, but still a task so its share of the bar fills
+      // in immediately rather than the whole bar sitting at 0% during it.
+      terrain: async (report) => {
+        const result = buildTerrain();
+        report(1);
+        return result;
+      },
+      // The only genuinely async part: fetching+parsing logo.glb once
+      // (cloned LOGO_COUNT times after, synchronously).
+      sculptures: async (report) => buildLogoInstances(scene, report),
+    },
+    { terrain: 1, sculptures: 9 },
+  );
+  loadingEl.remove();
+
+  const { mesh: terrain, ms: terrainMs } = terrainResult;
   terrain.receiveShadow = true;
   scene.add(terrain);
-  const { updateDropBlocks, giantPositions, allPositions, footprints, placementMs } = await buildLogoInstances(scene);
+  const { updateDropBlocks, giantPositions, allPositions, footprints, placementMs } = sculptures;
   const { findBlocker, stats: avoidanceStats } = buildObstacleAvoidance(footprints);
   const genStatsLine = `terrain ${terrainMs.toFixed(1)}ms  placement ${placementMs.toFixed(1)}ms`;
 
@@ -664,6 +724,14 @@ async function main() {
     camera.quaternion.copy(flyQuat);
   }
 
+  // Scratch vectors for updateWanderers — a hot per-fixed-step loop over
+  // every wanderer, so these are reused rather than allocated per call. All
+  // steering happens in the XZ plane, y left at 0.
+  const wanderPos = new Vec3();
+  const wanderTarget = new Vec3();
+  const wanderDiff = new Vec3();
+  const wanderAway = new Vec3();
+
   /** Steers each wanderer toward its destination or active detour,
    *  re-checking findBlocker every step and replacing the detour the
    *  instant something new is in the way. recentDetours stops that from
@@ -674,9 +742,10 @@ async function main() {
       const pos = wanderer.group.position;
 
       if (!wanderer.detour) {
-        const tdx = target.x - pos.x;
-        const tdz = target.z - pos.z;
-        if (Math.hypot(tdx, tdz) < target.radius + AVOIDANCE_CLEARANCE + DESTINATION_ARRIVAL_MARGIN) {
+        const arrival = target.radius + AVOIDANCE_CLEARANCE + DESTINATION_ARRIVAL_MARGIN;
+        wanderPos.set(pos.x, 0, pos.z);
+        wanderTarget.set(target.x, 0, target.z);
+        if (wanderPos.distanceToSquared(wanderTarget) < arrival * arrival) {
           wanderer.targetIndex = pickNextIndex(positions, wanderer.targetIndex);
           wanderer.recentDetours.length = 0;
           wanderer.avoidEscalation = 0;
@@ -685,18 +754,16 @@ async function main() {
       }
 
       let aim = wanderer.detour ?? target;
-      let dx = aim.x - pos.x;
-      let dz = aim.z - pos.z;
-      let dist = Math.hypot(dx, dz);
+      wanderDiff.set(aim.x - pos.x, 0, aim.z - pos.z);
+      let dist = wanderDiff.length();
       if (wanderer.detour && dist < WAYPOINT_ARRIVAL_DISTANCE) {
         wanderer.detour = null;
         aim = target;
-        dx = aim.x - pos.x;
-        dz = aim.z - pos.z;
-        dist = Math.hypot(dx, dz) || 1e-6;
+        wanderDiff.set(aim.x - pos.x, 0, aim.z - pos.z);
+        dist = wanderDiff.length() || 1e-6;
       }
-      const desiredX = dx / dist;
-      const desiredZ = dz / dist;
+      const desiredX = wanderDiff.x / dist;
+      const desiredZ = wanderDiff.z / dist;
 
       const blocker = findBlocker(pos.x, pos.y, pos.z, desiredX, desiredZ, dist);
       if (blocker) {
@@ -709,24 +776,24 @@ async function main() {
             : 0;
         } else {
           // No valid tangent (pos already inside the search circle) — just head straight away.
-          const awayLen = Math.hypot(pos.x - blocker.x, pos.z - blocker.z) || 1e-6;
+          wanderAway.set(pos.x - blocker.x, 0, pos.z - blocker.z);
+          const awayLen = wanderAway.length() || 1e-6;
           wanderer.detour = {
-            x: pos.x + ((pos.x - blocker.x) / awayLen) * searchRadius,
-            z: pos.z + ((pos.z - blocker.z) / awayLen) * searchRadius,
+            x: pos.x + (wanderAway.x / awayLen) * searchRadius,
+            z: pos.z + (wanderAway.z / awayLen) * searchRadius,
           };
           wanderer.avoidEscalation = 0;
         }
         wanderer.recentDetours.push(wanderer.detour);
         if (wanderer.recentDetours.length > RECENT_DETOURS_LIMIT) wanderer.recentDetours.shift();
         aim = wanderer.detour;
-        dx = aim.x - pos.x;
-        dz = aim.z - pos.z;
-        dist = Math.hypot(dx, dz) || 1e-6;
+        wanderDiff.set(aim.x - pos.x, 0, aim.z - pos.z);
+        dist = wanderDiff.length() || 1e-6;
       }
 
       const step = Math.min(dist, wanderer.spec.speed * dt);
-      const x = pos.x + (dx / dist) * step;
-      const z = pos.z + (dz / dist) * step;
+      const x = pos.x + (wanderDiff.x / dist) * step;
+      const z = pos.z + (wanderDiff.z / dist) * step;
       pos.set(x, terrainHeight(x, z) + wanderer.spec.height, z);
     }
   }

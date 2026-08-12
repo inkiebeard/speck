@@ -9,11 +9,11 @@
     </style>
   </head>
   <body>
-    <!-- No jsm/ modules used here (no GLTFLoader/OrbitControls), so unlike the
-         other examples this import map isn't strictly load-bearing — kept
-         anyway so logo-flight.js's own `import * as THREE from "three"` and
-         dist/speck.js's internal one resolve to the same module instance,
-         matching every other example's setup for consistency. -->
+    <!-- The engine's GltfLoader (used to load logo.glb) pulls in
+         three/examples/jsm/loaders/GLTFLoader.js, which itself does a bare
+         `import * as THREE from "three"` internally — the browser needs this
+         map to resolve that. Points at the same URL logo-flight.js imports
+         directly, so both resolve to one module instance. -->
     <script type="importmap">
       {
         "imports": {

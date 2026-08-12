@@ -13,6 +13,17 @@
  * Run `npm run build` first, then serve the repo root statically and open
  * wizard-survival.html.
  */
+// Vector/rotation math note: world-space position/velocity/direction/facing
+// math below uses the engine's own Vec3 and Quat (src/core/vector.ts,
+// src/core/quaternion.ts) rather than THREE.Vector3/Quaternion — both have
+// zero dependency on three (this engine treats three as an optional peer,
+// confined to rendering/audio; see src/index.ts), so game logic written
+// against them — player/skeleton/necromancer facing and movement included —
+// stays portable to a headless/server context that never loads three at
+// all (e.g. a server replaying/validating a recorded action log). THREE's
+// own Vector3/Vector2/Quaternion are still used for the handful of spots
+// tied to an actual three.js scene-graph object (mesh.position, a Box3
+// query, the camera) — Vec3/Quat deliberately don't reimplement those.
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.1/build/three.module.js';
 import {
   World,
@@ -32,6 +43,8 @@ import {
   action,
   condition,
   separationCohesionSteer,
+  Vec3,
+  Quat,
 } from '../../dist/speck.js';
 
 // --- Synthesized sound effects (no audio assets needed) ---------------------
@@ -157,7 +170,13 @@ const SPELL_MIN_RADIUS = 0.35;
 const SPELL_MAX_RADIUS = 0.75;
 const SPELL_MIN_SPEED = 15;
 const SPELL_MAX_SPEED = 34;
-const SPELL_MAX_RANGE = 45; // past this a still-airborne bolt is forced down
+// Reach scales with charge too, not just a flat cap — otherwise a bare tap
+// (slow, and least affected by gravity per SPELL_MIN_GRAVITY_SCALE below)
+// hangs in the air nearly as long as a full charge and reads as an
+// oddly long throw for the weakest possible shot. Past its lerped range a
+// still-airborne bolt is forced down regardless of charge.
+const SPELL_MIN_RANGE = 12;
+const SPELL_MAX_RANGE = 45;
 const GRAVITY = -24; // heavier than Earth's — reads as a weighty lob, not floaty
 // A bigger charge is a heavier mass of energy, not just a faster copy of a
 // small one — scaling gravity too is what sells that weight.
@@ -257,22 +276,34 @@ function groundHeight(x, z) {
   return Math.sin(x * 0.15) * 0.22 + Math.cos(z * 0.13) * 0.22 + Math.sin((x + z) * 0.05) * 0.28;
 }
 
+/** Horizontal-only (X/Z) distance/distance-squared between two points —
+ *  shared by every ground-plane check below (obstacles, AI perception,
+ *  splash damage, ...), where Y doesn't matter (see hasLineOfSight). */
+const _horizA = new Vec3();
+const _horizB = new Vec3();
+function horizontalDistance(x1, z1, x2, z2) {
+  return _horizA.set(x1, 0, z1).distanceTo(_horizB.set(x2, 0, z2));
+}
+function horizontalDistanceSq(x1, z1, x2, z2) {
+  return _horizA.set(x1, 0, z1).distanceToSquared(_horizB.set(x2, 0, z2));
+}
+
 /** Pushes (x, z) out of any `OBSTACLES` entry it's overlapping — simple
  *  circle-vs-circle resolution. Runs a few passes so clearing one obstacle
  *  can't shove a point straight into a second, close-together one. */
+const _resolvePush = new Vec3();
 function resolveObstacles(x, z, radius) {
   for (let pass = 0; pass < 3; pass++) {
     for (let i = 0; i < OBSTACLES.length; i++) {
       const ob = OBSTACLES[i];
-      const dx = x - ob.x;
-      const dz = z - ob.z;
+      _resolvePush.set(x - ob.x, 0, z - ob.z);
       const minDist = ob.radius + radius;
-      const distSq = dx * dx + dz * dz;
+      const distSq = _resolvePush.lengthSq();
       if (distSq < minDist * minDist && distSq > 1e-8) {
         const dist = Math.sqrt(distSq);
-        const push = minDist - dist;
-        x += (dx / dist) * push;
-        z += (dz / dist) * push;
+        _resolvePush.multiplyScalar((minDist - dist) / dist);
+        x += _resolvePush.x;
+        z += _resolvePush.z;
       }
     }
   }
@@ -280,14 +311,16 @@ function resolveObstacles(x, z, radius) {
 }
 
 /** Whether the segment (x1,z1)-(x2,z2) passes within `radius` of (cx,cz). */
+const _segAB = new Vec3();
+const _segAC = new Vec3();
 function segmentIntersectsCircle(x1, z1, x2, z2, cx, cz, radius) {
-  const dx = x2 - x1;
-  const dz = z2 - z1;
-  const len2 = dx * dx + dz * dz;
-  let t = len2 > 1e-8 ? ((cx - x1) * dx + (cz - z1) * dz) / len2 : 0;
+  _segAB.set(x2 - x1, 0, z2 - z1);
+  _segAC.set(cx - x1, 0, cz - z1);
+  const len2 = _segAB.lengthSq();
+  let t = len2 > 1e-8 ? _segAC.dot(_segAB) / len2 : 0;
   t = THREE.MathUtils.clamp(t, 0, 1);
-  const px = x1 + t * dx;
-  const pz = z1 + t * dz;
+  const px = x1 + t * _segAB.x;
+  const pz = z1 + t * _segAB.z;
   const ddx = px - cx;
   const ddz = pz - cz;
   return ddx * ddx + ddz * ddz <= radius * radius;
@@ -312,7 +345,7 @@ function nearestObstacle(x, z, minClearance = 0) {
   let bestDist = Infinity;
   for (let i = 0; i < OBSTACLES.length; i++) {
     const ob = OBSTACLES[i];
-    const dist = Math.hypot(ob.x - x, ob.z - z);
+    const dist = horizontalDistance(ob.x, ob.z, x, z);
     if (dist - ob.radius < minClearance) continue;
     if (dist < bestDist) {
       bestDist = dist;
@@ -354,13 +387,20 @@ function normalizedInstance(template, targetHeight, cloneMaterials = false) {
 }
 
 // wizard/necromancer/skeleton all face down +X at identity rotation (not
-// +Z), so atan2(-dz, dx) rotates that pose to point at (dx, dz).
-function yawQuaternion(dx, dz, out = new THREE.Quaternion()) {
+// +Z), so atan2(-dz, dx) rotates that pose to point at (dx, dz). Built on
+// the engine's own Quat, not THREE.Quaternion — the result only ever gets
+// unpacked (via quatArray) into raw floats for TransformStore, never handed
+// to a three.js scene-graph object, so it doesn't need three loaded at all.
+function yawQuaternion(dx, dz, out = new Quat()) {
   const yaw = Math.atan2(-dz, dx);
   return out.setFromAxisAngle(UP, yaw);
 }
 
-const UP = new THREE.Vector3(0, 1, 0);
+const UP = new Vec3(0, 1, 0);
+// Reused across yawQuaternion's hot call sites (steering, facing) to avoid a
+// per-entity-per-tick Quaternion allocation — safe since each caller reads
+// its x/y/z/w out of it synchronously before the next call.
+const yawScratch = new Quat();
 
 const isTouch = matchMedia('(pointer: coarse)').matches;
 
@@ -447,6 +487,15 @@ async function main() {
 
   const spatialGrid = new SpatialGrid(GRID_CELL_SIZE);
   world.registerSpatialGrid(spatialGrid, transforms);
+
+  // Skeleton separation/cohesion neighbor lists — built once per tick (see
+  // the main loop, right before world.step()) via buildNeighborLists rather
+  // than each skeleton's steerToward calling queryRadius individually: at
+  // any real skeleton count, batching this touches each nearby cell pair
+  // once instead of redundantly rescanning overlapping neighborhoods once
+  // per skeleton (see SpatialGrid.buildNeighborLists's own doc comment).
+  const skeletonNeighborLists = new Map();
+  const EMPTY_NEIGHBORS = [];
 
   // --- Load the 3 GLB templates once; every instance clones from these ---
   const gltf = new GltfLoader();
@@ -816,9 +865,7 @@ async function main() {
     const oa = transforms.slotOf(a) * transforms.stride;
     const ob = transforms.slotOf(b) * transforms.stride;
     const raw = transforms.raw;
-    const dx = raw[oa] - raw[ob];
-    const dz = raw[oa + 2] - raw[ob + 2];
-    return Math.hypot(dx, dz);
+    return horizontalDistance(raw[oa], raw[oa + 2], raw[ob], raw[ob + 2]);
   }
 
   /** Proximity alone always registers, sightline or not; farther out (up to
@@ -855,7 +902,9 @@ async function main() {
     }
   }
 
-  const steerOut = { x: 0, y: 0, z: 0 };
+  const steerOut = new Vec3();
+  const _steerDir = new Vec3();
+  const _steerVel = new Vec3();
   /** Moves `e` toward (targetX, targetZ) at `speed`, blended with separation
    *  steering and resolved against obstacles. Returns the pre-move distance
    *  to the target, so a caller can cheaply check "did I just arrive". */
@@ -866,24 +915,24 @@ async function main() {
     const px = raw[o];
     const pz = raw[o + 2];
 
-    let dx = targetX - px;
-    let dz = targetZ - pz;
-    const dist = Math.hypot(dx, dz) || 1e-6;
-    dx /= dist;
-    dz /= dist;
+    _steerDir.set(targetX - px, 0, targetZ - pz);
+    const dist = _steerDir.length();
+    _steerDir.normalize();
 
-    separationCohesionSteer(spatialGrid, transforms, e, SEPARATION_RADIUS, { separation: 1.2, cohesion: 0 }, steerOut);
+    const neighbors = skeletonNeighborLists.get(e) ?? EMPTY_NEIGHBORS;
+    separationCohesionSteer(transforms, e, neighbors, { separation: 1.2, cohesion: 0 }, steerOut);
 
-    const vx = dx + steerOut.x;
-    const vz = dz + steerOut.z;
-    const vlen = Math.hypot(vx, vz) || 1e-6;
-    let nx = px + (vx / vlen) * speed * dt;
-    let nz = pz + (vz / vlen) * speed * dt;
+    // Not renormalized before the yaw calc below — atan2 only cares about
+    // direction, and the un-normalized sum still points the same way.
+    _steerVel.set(_steerDir.x + steerOut.x, 0, _steerDir.z + steerOut.z);
+    const vlen = _steerVel.length() || 1e-6;
+    let nx = px + (_steerVel.x / vlen) * speed * dt;
+    let nz = pz + (_steerVel.z / vlen) * speed * dt;
     ({ x: nx, z: nz } = resolveObstacles(nx, nz, SKELETON_RADIUS));
     nx = THREE.MathUtils.clamp(nx, -ARENA_HALF + 1, ARENA_HALF - 1);
     nz = THREE.MathUtils.clamp(nz, -ARENA_HALF + 1, ARENA_HALF - 1);
 
-    transforms.add(e, nx, groundHeight(nx, nz), nz, ...quatArray(yawQuaternion(vx, vz)));
+    transforms.add(e, nx, groundHeight(nx, nz), nz, ...quatArray(yawQuaternion(_steerVel.x, _steerVel.z, yawScratch)));
     return dist;
   }
 
@@ -891,6 +940,7 @@ async function main() {
     return [q.x, q.y, q.z, q.w];
   }
 
+  const _lookDir = new Vec3();
   /** The necromancer faces the player in every state except fleeing. Falls
    *  back to `fallback` if the player can't be found or is on top of it. */
   function necromancerLookAtPlayer(nx, nz, fallback) {
@@ -898,10 +948,9 @@ async function main() {
     if (pSlot === -1) return fallback;
     const po = pSlot * transforms.stride;
     const raw = transforms.raw;
-    const dx = raw[po] - nx;
-    const dz = raw[po + 2] - nz;
-    if (dx * dx + dz * dz < 1e-6) return fallback;
-    return quatArray(yawQuaternion(dx, dz));
+    _lookDir.set(raw[po] - nx, 0, raw[po + 2] - nz);
+    if (_lookDir.lengthSq() < 1e-6) return fallback;
+    return quatArray(yawQuaternion(_lookDir.x, _lookDir.z, yawScratch));
   }
 
   world.addSystem(createAiSystem(ai));
@@ -976,6 +1025,7 @@ async function main() {
       hitFlash.style.opacity = '0.3';
       showBanner('You have fallen…', '#ff6666', 'Press R to try again');
       w.despawn(ev.entity);
+      if (!isTouch) document.exitPointerLock();
     }
 
     // Cleared the moment both are true, whichever death makes it so.
@@ -1105,6 +1155,7 @@ async function main() {
 
   function showCompletionScreen() {
     levelComplete = true;
+    if (!isTouch) document.exitPointerLock();
     const accuracy = stats.spellsShot > 0 ? Math.round((stats.directHits / stats.spellsShot) * 100) : 0;
     const rows = [
       ['Spells cast', stats.spellsShot],
@@ -1210,18 +1261,14 @@ async function main() {
     document.body.appendChild(joyBase);
 
     let joyPointerId = null;
+    const _joyStick = new THREE.Vector2();
     const updateJoystick = (e) => {
       const rect = joyBase.getBoundingClientRect();
-      let dx = e.clientX - (rect.left + rect.width / 2);
-      let dy = e.clientY - (rect.top + rect.height / 2);
-      const dist = Math.hypot(dx, dy);
-      if (dist > JOYSTICK_RADIUS) {
-        dx = (dx / dist) * JOYSTICK_RADIUS;
-        dy = (dy / dist) * JOYSTICK_RADIUS;
-      }
-      joyKnob.style.transform = `translate(${dx}px, ${dy}px)`;
-      joyVec.strafe = dx / JOYSTICK_RADIUS;
-      joyVec.forward = -dy / JOYSTICK_RADIUS; // stick pushed up (screen -Y) = forward
+      _joyStick.set(e.clientX - (rect.left + rect.width / 2), e.clientY - (rect.top + rect.height / 2));
+      if (_joyStick.length() > JOYSTICK_RADIUS) _joyStick.setLength(JOYSTICK_RADIUS);
+      joyKnob.style.transform = `translate(${_joyStick.x}px, ${_joyStick.y}px)`;
+      joyVec.strafe = _joyStick.x / JOYSTICK_RADIUS;
+      joyVec.forward = -_joyStick.y / JOYSTICK_RADIUS; // stick pushed up (screen -Y) = forward
     };
     const releaseJoystick = (e) => {
       if (e.pointerId !== joyPointerId) return;
@@ -1302,10 +1349,13 @@ async function main() {
   let mana = MANA_MAX;
   let gameOver = false;
   let levelComplete = false;
-  const playerFacing = new THREE.Quaternion();
-  const forwardVec = new THREE.Vector3();
-  const rightVec = new THREE.Vector3();
-  const moveVec = new THREE.Vector3();
+  // playerFacing/forwardVec/rightVec/moveVec never touch a scene-graph
+  // object either (only ever unpacked into transforms.add's raw floats or
+  // read as .x/.z), so these are Quat/Vec3 too — see the vector-math note.
+  const playerFacing = new Quat();
+  const forwardVec = new Vec3();
+  const rightVec = new Vec3();
+  const moveVec = new Vec3();
 
   function movePlayer(dt) {
     playerFacing.setFromAxisAngle(UP, camYaw);
@@ -1362,8 +1412,8 @@ async function main() {
   const boltColorMin = new THREE.Color(0x8a5bff); // dim, cheap tap
   const boltColorMax = new THREE.Color(0xf0e6ff); // bright near-white, full charge
 
-  /** Fires the spell at `chargeFraction` (0..1). Cost/damage/radius scale
-   *  with it; launch speed/arc don't (see the SPELL_MIN/MAX_* comment up top). */
+  /** Fires the spell at `chargeFraction` (0..1). Cost/damage/radius/speed/
+   *  gravity/range all scale with it (see the SPELL_MIN/MAX_* comment up top). */
   function castSpell(chargeFraction) {
     // Guards the desktop/touch release handlers below, which aren't gated on
     // gameOver the way the fixed-step input check is.
@@ -1387,40 +1437,39 @@ async function main() {
     const slot = transforms.slotOf(playerEntity);
     const o = slot * transforms.stride;
     const raw = transforms.raw;
-    const dir = new THREE.Vector3(1, 0, 0).applyQuaternion(playerFacing).normalize();
+    const dir = new Vec3(1, 0, 0).applyQuaternion(playerFacing).normalize();
 
-    // Vertical look sets the launch angle (aim up for a steep lob, down for
-    // flat); camPitch runs the opposite way (see the mousemove comment), so
-    // this mirrors it. Charge sets both speed and gravityScale together, so
-    // a bigger charge is a heavier throw, not just a faster small one.
-    const launchAngle = CAM_MIN_PITCH + CAM_MAX_PITCH - camPitch;
+    // Vertical look sets the *ceiling* on launch angle (aim up for a steep
+    // lob, down for flat); camPitch runs the opposite way (see the mousemove
+    // comment), so this mirrors it. Scaled by actualFraction on top of that:
+    // a bare tap fires flat/direct regardless of aim, and only a full
+    // charge reaches the aimed lob — a weak flick shouldn't arc, only a
+    // heavy throw should. Charge sets speed and gravityScale together too,
+    // so a bigger charge is a heavier throw, not just a faster small one.
+    const aimAngle = CAM_MIN_PITCH + CAM_MAX_PITCH - camPitch;
+    const launchAngle = aimAngle * actualFraction;
     const speed = THREE.MathUtils.lerp(SPELL_MIN_SPEED, SPELL_MAX_SPEED, actualFraction);
     const gravityScale = THREE.MathUtils.lerp(SPELL_MIN_GRAVITY_SCALE, SPELL_MAX_GRAVITY_SCALE, actualFraction);
     const speedH = speed * Math.cos(launchAngle);
     const speedV = speed * Math.sin(launchAngle);
+    const range = THREE.MathUtils.lerp(SPELL_MIN_RANGE, SPELL_MAX_RANGE, actualFraction);
 
     const mesh = new THREE.Mesh(boltGeo, new THREE.MeshBasicMaterial({ color: boltColorMin.clone().lerp(boltColorMax, actualFraction) }));
     mesh.scale.setScalar(radius * 1.4); // a bit bigger than the hit-test radius, so it reads clearly
     const glow = new THREE.PointLight(0xb87fff, 2 + actualFraction * 3, 6 + actualFraction * 4);
     mesh.add(glow);
-    const originX = raw[o] + dir.x * 0.8;
-    const originZ = raw[o + 2] + dir.z * 0.8;
-    const originY = raw[o + 1] + 1.1;
-    mesh.position.set(originX, originY, originZ);
+    const origin = new Vec3(raw[o] + dir.x * 0.8, raw[o + 1] + 1.1, raw[o + 2] + dir.z * 0.8);
+    mesh.position.copy(origin);
     scene.add(mesh);
 
     bolts.push({
       mesh,
-      x: originX,
-      y: originY,
-      z: originZ,
-      vx: dir.x * speedH,
-      vy: speedV,
-      vz: dir.z * speedH,
+      pos: origin.clone(),
+      vel: new Vec3(dir.x * speedH, speedV, dir.z * speedH),
       gravity: GRAVITY * gravityScale,
-      originX,
-      originZ,
+      origin,
       fraction: actualFraction,
+      range,
       splashRadius,
       splashDamage,
       damage,
@@ -1459,7 +1508,14 @@ async function main() {
   chargeOrb.visible = false;
   scene.add(chargeOrb);
 
-  const TRAJECTORY_SAMPLES = 26;
+  // Sized for the worst case: full charge (steepest allowed launchAngle,
+  // ~1.15 rad, and heaviest gravity, 1.5x) fired straight up-range with no
+  // horizontal drift to trip the range cutoff early — apex at ~0.86s, full
+  // flight (up + back down to origin height) at ~1.8s. Too few samples here
+  // and a steep, fully-charged preview runs out of line before it arcs back
+  // down, reading as a beam shooting off the top of the screen instead of a
+  // lob (undershooting this is exactly what produced that bug).
+  const TRAJECTORY_SAMPLES = 40;
   const TRAJECTORY_DT = 0.06; // seconds between sampled points
   const trajectoryGeo = new THREE.BufferGeometry();
   const trajectoryPositions = new Float32Array(TRAJECTORY_SAMPLES * 3);
@@ -1472,6 +1528,8 @@ async function main() {
   trajectoryLine.visible = false;
   scene.add(trajectoryLine);
 
+  const _trajPos = new Vec3();
+  const _trajVel = new Vec3();
   /** Updates the charge orb, trajectory preview, and HUD charge bar together,
    *  once per rendered frame, off the current charging/chargeStartTime state. */
   function updateChargeVisuals() {
@@ -1490,7 +1548,7 @@ async function main() {
     if (slot === -1) return; // despawned mid-charge — nothing left to aim from
     const o = slot * transforms.stride;
     const raw = transforms.raw;
-    const dir = new THREE.Vector3(1, 0, 0).applyQuaternion(playerFacing);
+    const dir = new Vec3(1, 0, 0).applyQuaternion(playerFacing);
     const originX = raw[o] + dir.x * 0.8;
     const originZ = raw[o + 2] + dir.z * 0.8;
     const originY = raw[o + 1] + 1.1;
@@ -1502,34 +1560,30 @@ async function main() {
 
     // Same launch-angle/speed/gravity mapping castSpell would use if
     // released right now, so the preview reflects this shot's current charge.
-    const launchAngle = CAM_MIN_PITCH + CAM_MAX_PITCH - camPitch;
+    const aimAngle = CAM_MIN_PITCH + CAM_MAX_PITCH - camPitch;
+    const launchAngle = aimAngle * fraction;
     const speed = THREE.MathUtils.lerp(SPELL_MIN_SPEED, SPELL_MAX_SPEED, fraction);
     const gravity = GRAVITY * THREE.MathUtils.lerp(SPELL_MIN_GRAVITY_SCALE, SPELL_MAX_GRAVITY_SCALE, fraction);
     const speedH = speed * Math.cos(launchAngle);
     const speedV = speed * Math.sin(launchAngle);
+    const range = THREE.MathUtils.lerp(SPELL_MIN_RANGE, SPELL_MAX_RANGE, fraction);
 
     trajectoryLine.visible = true;
-    let x = originX;
-    let y = originY;
-    let z = originZ;
-    let vx = dir.x * speedH;
-    let vy = speedV;
-    let vz = dir.z * speedH;
+    _trajPos.set(originX, originY, originZ);
+    _trajVel.set(dir.x * speedH, speedV, dir.z * speedH);
     let count = 0;
     for (let i = 0; i < TRAJECTORY_SAMPLES; i++) {
-      trajectoryPositions[count * 3] = x;
-      trajectoryPositions[count * 3 + 1] = y;
-      trajectoryPositions[count * 3 + 2] = z;
+      trajectoryPositions[count * 3] = _trajPos.x;
+      trajectoryPositions[count * 3 + 1] = _trajPos.y;
+      trajectoryPositions[count * 3 + 2] = _trajPos.z;
       count++;
-      vy += gravity * TRAJECTORY_DT;
-      x += vx * TRAJECTORY_DT;
-      y += vy * TRAJECTORY_DT;
-      z += vz * TRAJECTORY_DT;
-      const groundY = groundHeight(x, z);
-      if (y <= groundY || Math.hypot(x - originX, z - originZ) > SPELL_MAX_RANGE) {
-        trajectoryPositions[count * 3] = x;
-        trajectoryPositions[count * 3 + 1] = Math.max(y, groundY);
-        trajectoryPositions[count * 3 + 2] = z;
+      _trajVel.y += gravity * TRAJECTORY_DT;
+      _trajPos.addScaledVector(_trajVel, TRAJECTORY_DT);
+      const groundY = groundHeight(_trajPos.x, _trajPos.z);
+      if (_trajPos.y <= groundY || horizontalDistance(_trajPos.x, _trajPos.z, originX, originZ) > range) {
+        trajectoryPositions[count * 3] = _trajPos.x;
+        trajectoryPositions[count * 3 + 1] = Math.max(_trajPos.y, groundY);
+        trajectoryPositions[count * 3 + 2] = _trajPos.z;
         count++;
         break;
       }
@@ -1541,27 +1595,28 @@ async function main() {
   function updateBolts(dt) {
     for (let i = bolts.length - 1; i >= 0; i--) {
       const b = bolts[i];
-      b.vy += b.gravity * dt;
-      b.x += b.vx * dt;
-      b.y += b.vy * dt;
-      b.z += b.vz * dt;
-      b.mesh.position.set(b.x, b.y, b.z);
+      b.vel.y += b.gravity * dt;
+      b.pos.addScaledVector(b.vel, dt);
+      b.mesh.position.copy(b.pos);
 
       // Ends the shot: dug into the terrain, or flew far enough out to be
       // forced down regardless (so a flat/fast shot can't sail forever).
       let impact = null;
-      const groundY = groundHeight(b.x, b.z);
-      if (b.y <= groundY) impact = { x: b.x, y: groundY, z: b.z };
-      else if (Math.hypot(b.x - b.originX, b.z - b.originZ) > SPELL_MAX_RANGE) impact = { x: b.x, y: b.y, z: b.z };
+      const groundY = groundHeight(b.pos.x, b.pos.z);
+      if (b.pos.y <= groundY) impact = { x: b.pos.x, y: groundY, z: b.pos.z };
+      else if (horizontalDistance(b.pos.x, b.pos.z, b.origin.x, b.origin.z) > b.range) {
+        impact = { x: b.pos.x, y: b.pos.y, z: b.pos.z };
+      }
 
       if (!impact) {
         for (let oi = 0; oi < OBSTACLES.length; oi++) {
           const ob = OBSTACLES[oi];
-          const dx = b.x - ob.x;
-          const dz = b.z - ob.z;
           const minDist = ob.radius + b.radius;
-          if (dx * dx + dz * dz <= minDist * minDist && b.y <= groundHeight(ob.x, ob.z) + ob.height) {
-            impact = { x: b.x, y: b.y, z: b.z };
+          if (
+            horizontalDistanceSq(b.pos.x, b.pos.z, ob.x, ob.z) <= minDist * minDist &&
+            b.pos.y <= groundHeight(ob.x, ob.z) + ob.height
+          ) {
+            impact = { x: b.pos.x, y: b.pos.y, z: b.pos.z };
             break;
           }
         }
@@ -1571,17 +1626,17 @@ async function main() {
       if (!impact) {
         // Generous query radius (must cover the tallest target's full
         // height), narrowed to an actual hit by the vertical-band check below.
-        const nearby = spatialGrid.queryRadius(transforms, b.x, b.y, b.z, b.radius + 2.6);
+        const nearby = spatialGrid.queryRadius(transforms, b.pos.x, b.pos.y, b.pos.z, b.radius + 2.6);
         for (let n = 0; n < nearby.length; n++) {
           const cand = nearby[n];
           const k = kinds.get(cand);
           if (k !== 'skeleton' && k !== 'necromancer') continue;
           const cs = transforms.slotOf(cand) * transforms.stride;
           const raw = transforms.raw;
-          const horiz = Math.hypot(raw[cs] - b.x, raw[cs + 2] - b.z);
+          const horiz = horizontalDistance(raw[cs], raw[cs + 2], b.pos.x, b.pos.z);
           if (horiz > b.radius + 0.8) continue;
           const targetHeight = k === 'necromancer' ? 2.1 : 1.7;
-          if (b.y < raw[cs + 1] - 0.1 || b.y > raw[cs + 1] + targetHeight) continue;
+          if (b.pos.y < raw[cs + 1] - 0.1 || b.pos.y > raw[cs + 1] + targetHeight) continue;
           hitEntity = cand;
           break;
         }
@@ -1590,11 +1645,11 @@ async function main() {
       if (hitEntity !== undefined) {
         world.events.emit({ type: 'damage', target: hitEntity, amount: b.damage });
         flashHit(hitEntity);
-        const splashDamage = applySplash(b.x, b.z, b.splashRadius, b.splashDamage, hitEntity);
+        const splashDamage = applySplash(b.pos.x, b.pos.z, b.splashRadius, b.splashDamage, hitEntity);
         stats.directHits++;
         stats.mostDamageSingleShot = Math.max(stats.mostDamageSingleShot, b.damage + splashDamage);
-        burst({ x: b.x, y: b.y, z: b.z }, 0x8a5bff, Math.round(THREE.MathUtils.lerp(10, 36, b.fraction)));
-        spawnSplashRing({ x: b.x, y: b.y, z: b.z }, b.splashRadius);
+        burst(b.pos, 0x8a5bff, Math.round(THREE.MathUtils.lerp(10, 36, b.fraction)));
+        spawnSplashRing(b.pos, b.splashRadius);
         scene.remove(b.mesh);
         bolts.splice(i, 1);
       } else if (impact) {
@@ -1622,7 +1677,7 @@ async function main() {
       if (k !== 'skeleton' && k !== 'necromancer') continue;
       const cs = transforms.slotOf(cand) * transforms.stride;
       const raw = transforms.raw;
-      const dist = Math.hypot(raw[cs] - x, raw[cs + 2] - z);
+      const dist = horizontalDistance(raw[cs], raw[cs + 2], x, z);
       if (dist > radius) continue;
       // Curved (pow 0.6), not linear, falloff — stays high through most of
       // the radius and drops sharply only right at the edge.
@@ -1701,9 +1756,7 @@ async function main() {
       const speed = 2.5 + Math.random() * 3.5;
       boneShards.push({
         mesh,
-        vx: Math.sin(phi) * Math.cos(theta) * speed,
-        vy: Math.cos(phi) * speed + 1.5,
-        vz: Math.sin(phi) * Math.sin(theta) * speed,
+        vel: new Vec3(Math.sin(phi) * Math.cos(theta) * speed, Math.cos(phi) * speed + 1.5, Math.sin(phi) * Math.sin(theta) * speed),
         spinX: (Math.random() - 0.5) * 12,
         spinY: (Math.random() - 0.5) * 12,
         spinZ: (Math.random() - 0.5) * 12,
@@ -1717,10 +1770,8 @@ async function main() {
     for (let i = boneShards.length - 1; i >= 0; i--) {
       const s = boneShards[i];
       s.age += dt;
-      s.vy += GRAVITY * 0.4 * dt; // lighter fall than a spell bolt — small debris
-      s.mesh.position.x += s.vx * dt;
-      s.mesh.position.y += s.vy * dt;
-      s.mesh.position.z += s.vz * dt;
+      s.vel.y += GRAVITY * 0.4 * dt; // lighter fall than a spell bolt — small debris
+      s.mesh.position.addScaledVector(s.vel, dt);
       s.mesh.rotation.x += s.spinX * dt;
       s.mesh.rotation.y += s.spinY * dt;
       s.mesh.rotation.z += s.spinZ * dt;
@@ -1747,56 +1798,50 @@ async function main() {
     const no = nSlot * transforms.stride;
     const po = pSlot * transforms.stride;
 
-    const originX = raw[no];
-    const originY = raw[no + 1] + 1.8; // roughly staff/head height
-    const originZ = raw[no + 2];
-    const dx = raw[po] - originX;
-    const dy = raw[po + 1] + 1.1 - originY; // aimed at the player's torso, not their feet
-    const dz = raw[po + 2] - originZ;
-    const dist = Math.hypot(dx, dy, dz) || 1e-6;
+    const origin = new Vec3(raw[no], raw[no + 1] + 1.8, raw[no + 2]); // roughly staff/head height
+    // aimed at the player's torso, not their feet
+    const target = new Vec3(raw[po], raw[po + 1] + 1.1, raw[po + 2]);
+    const dir = target.sub(origin);
+    const dist = dir.length() || 1e-6;
+    dir.divideScalar(dist);
 
     const mesh = new THREE.Mesh(necromancerBoltGeo, necromancerBoltMat);
     const glow = new THREE.PointLight(0x33ff88, 2.5, 6);
     mesh.add(glow);
-    mesh.position.set(originX, originY, originZ);
+    mesh.position.copy(origin);
     scene.add(mesh);
 
     necromancerBolts.push({
       mesh,
-      x: originX,
-      y: originY,
-      z: originZ,
-      vx: (dx / dist) * NECROMANCER_BOLT_SPEED,
-      vy: (dy / dist) * NECROMANCER_BOLT_SPEED,
-      vz: (dz / dist) * NECROMANCER_BOLT_SPEED,
+      pos: origin.clone(),
+      vel: dir.multiplyScalar(NECROMANCER_BOLT_SPEED),
       traveled: 0,
     });
     sound.play(necroCastSfx, { volume: 0.6, priority: 1 });
   }
 
+  const _necroBoltTarget = new Vec3();
   function updateNecromancerBolts(dt) {
     for (let i = necromancerBolts.length - 1; i >= 0; i--) {
       const b = necromancerBolts[i];
       const step = NECROMANCER_BOLT_SPEED * dt;
-      b.x += b.vx * dt;
-      b.y += b.vy * dt;
-      b.z += b.vz * dt;
+      b.pos.addScaledVector(b.vel, dt);
       b.traveled += step;
-      b.mesh.position.set(b.x, b.y, b.z);
+      b.mesh.position.copy(b.pos);
 
       let hit = false;
       const pSlot = transforms.slotOf(playerEntity);
       if (pSlot !== -1) {
         const po = pSlot * transforms.stride;
         const raw = transforms.raw;
-        const dist = Math.hypot(raw[po] - b.x, raw[po + 1] + 1.1 - b.y, raw[po + 2] - b.z);
-        hit = dist <= NECROMANCER_BOLT_HIT_RADIUS;
+        _necroBoltTarget.set(raw[po], raw[po + 1] + 1.1, raw[po + 2]);
+        hit = b.pos.distanceTo(_necroBoltTarget) <= NECROMANCER_BOLT_HIT_RADIUS;
       }
 
       if (hit) {
         world.events.emit({ type: 'damage', target: playerEntity, amount: NECROMANCER_BOLT_DAMAGE });
         stats.necromancerBoltsHit++;
-        burst({ x: b.x, y: b.y, z: b.z }, 0x33ff88, 10);
+        burst(b.pos, 0x33ff88, 10);
         scene.remove(b.mesh);
         necromancerBolts.splice(i, 1);
       } else if (b.traveled >= NECROMANCER_BOLT_MAX_RANGE) {
@@ -1826,7 +1871,7 @@ async function main() {
         x: (Math.random() * 2 - 1) * (ARENA_HALF - margin),
         z: (Math.random() * 2 - 1) * (ARENA_HALF - margin),
       };
-      const dist = Math.hypot(candidate.x - px, candidate.z - pz);
+      const dist = horizontalDistance(candidate.x, candidate.z, px, pz);
       if (dist >= NECROMANCER_MIN_DISTANCE) {
         necromancerWanderTarget = candidate;
         return;
@@ -1870,6 +1915,7 @@ async function main() {
     }
   }
 
+  const _wanderDir = new Vec3();
   function moveNecromancerWander(dt) {
     if (!necromancerWanderTarget) pickNecromancerWanderTarget();
     const slot = transforms.slotOf(necromancerEntity);
@@ -1880,35 +1926,31 @@ async function main() {
 
     // The player closing distance always overrides the wander target; once
     // backed off, force a fresh target so it doesn't walk straight back.
-    let dx;
-    let dz;
+    let haveDir = false;
     const pSlot = transforms.slotOf(playerEntity);
     if (pSlot !== -1) {
       const po = pSlot * transforms.stride;
-      const toPlayerX = raw[po] - px;
-      const toPlayerZ = raw[po + 2] - pz;
-      const distToPlayer = Math.hypot(toPlayerX, toPlayerZ) || 1e-6;
+      _wanderDir.set(raw[po] - px, 0, raw[po + 2] - pz);
+      const distToPlayer = _wanderDir.length() || 1e-6;
       if (distToPlayer < NECROMANCER_MIN_DISTANCE) {
-        dx = -toPlayerX / distToPlayer;
-        dz = -toPlayerZ / distToPlayer;
+        _wanderDir.multiplyScalar(-1 / distToPlayer);
         necromancerWanderTarget = null;
+        haveDir = true;
       }
     }
 
-    if (dx === undefined) {
-      let tx = necromancerWanderTarget.x - px;
-      let tz = necromancerWanderTarget.z - pz;
-      const dist = Math.hypot(tx, tz);
+    if (!haveDir) {
+      _wanderDir.set(necromancerWanderTarget.x - px, 0, necromancerWanderTarget.z - pz);
+      const dist = _wanderDir.length();
       if (dist < 1.5) {
         pickNecromancerWanderTarget();
         return;
       }
-      dx = tx / dist;
-      dz = tz / dist;
+      _wanderDir.divideScalar(dist);
     }
 
-    let nx = px + dx * NECROMANCER_WANDER_SPEED * dt;
-    let nz = pz + dz * NECROMANCER_WANDER_SPEED * dt;
+    let nx = px + _wanderDir.x * NECROMANCER_WANDER_SPEED * dt;
+    let nz = pz + _wanderDir.z * NECROMANCER_WANDER_SPEED * dt;
     ({ x: nx, z: nz } = resolveObstacles(nx, nz, NECROMANCER_RADIUS));
     nx = THREE.MathUtils.clamp(nx, -ARENA_HALF + 2, ARENA_HALF - 2);
     nz = THREE.MathUtils.clamp(nz, -ARENA_HALF + 2, ARENA_HALF - 2);
@@ -1916,6 +1958,8 @@ async function main() {
     transforms.add(necromancerEntity, nx, groundHeight(nx, nz), nz, ...facing);
   }
 
+  const _fleeDir = new Vec3();
+  const _fleeCover = new Vec3();
   function updateNecromancer(dt) {
     if (!necromancerAlive) return;
 
@@ -1945,37 +1989,24 @@ async function main() {
 
       // Away-from-player is recomputed live each tick, blended with the
       // direction toward the fixed cover target picked at hit-time.
-      let dirX = 0;
-      let dirZ = 0;
+      _fleeDir.set(0, 0, 0);
       const pSlotForDir = transforms.slotOf(playerEntity);
       if (pSlotForDir !== -1) {
         const po = pSlotForDir * transforms.stride;
-        const toPlayerX = raw[po] - raw[o];
-        const toPlayerZ = raw[po + 2] - raw[o + 2];
-        const toPlayerLen = Math.hypot(toPlayerX, toPlayerZ) || 1e-6;
-        dirX = -toPlayerX / toPlayerLen;
-        dirZ = -toPlayerZ / toPlayerLen;
+        _fleeDir.set(raw[o] - raw[po], 0, raw[o + 2] - raw[po + 2]).normalize();
       }
       if (necromancerFleeCoverTarget) {
-        let cx = necromancerFleeCoverTarget.x - raw[o];
-        let cz = necromancerFleeCoverTarget.z - raw[o + 2];
-        const clen = Math.hypot(cx, cz) || 1e-6;
-        cx /= clen;
-        cz /= clen;
-        const blendX = dirX * 0.3 + cx * 0.7;
-        const blendZ = dirZ * 0.3 + cz * 0.7;
-        const blend = Math.hypot(blendX, blendZ) || 1e-6;
-        dirX = blendX / blend;
-        dirZ = blendZ / blend;
+        _fleeCover.set(necromancerFleeCoverTarget.x - raw[o], 0, necromancerFleeCoverTarget.z - raw[o + 2]).normalize();
+        _fleeDir.set(_fleeDir.x * 0.3 + _fleeCover.x * 0.7, 0, _fleeDir.z * 0.3 + _fleeCover.z * 0.7).normalize();
       }
 
-      let nx = raw[o] + dirX * NECROMANCER_FLEE_SPEED * dt;
-      let nz = raw[o + 2] + dirZ * NECROMANCER_FLEE_SPEED * dt;
+      let nx = raw[o] + _fleeDir.x * NECROMANCER_FLEE_SPEED * dt;
+      let nz = raw[o + 2] + _fleeDir.z * NECROMANCER_FLEE_SPEED * dt;
       ({ x: nx, z: nz } = resolveObstacles(nx, nz, NECROMANCER_RADIUS));
       nx = THREE.MathUtils.clamp(nx, -ARENA_HALF + 2, ARENA_HALF - 2);
       nz = THREE.MathUtils.clamp(nz, -ARENA_HALF + 2, ARENA_HALF - 2);
       // Faces the direction it's fleeing, not the player, unlike every other state.
-      transforms.add(necromancerEntity, nx, groundHeight(nx, nz), nz, ...quatArray(yawQuaternion(dirX, dirZ)));
+      transforms.add(necromancerEntity, nx, groundHeight(nx, nz), nz, ...quatArray(yawQuaternion(_fleeDir.x, _fleeDir.z, yawScratch)));
 
       const pSlot = transforms.slotOf(playerEntity);
       let brokeLineOfSight = false;
@@ -2088,6 +2119,13 @@ async function main() {
         if (input.justReleased('cast')) releaseCharge();
 
         movePlayer(fixedDt);
+        // Rebuilds the grid a tick early (world.step() below rebuilds it
+        // again internally, registered via registerSpatialGrid — a small
+        // redundant ~1ms rebuild, cheap next to what batching neighbor
+        // queries saves) so buildNeighborLists sees this tick's positions
+        // before any skeleton's steerToward runs inside world.step().
+        spatialGrid.rebuild(transforms);
+        spatialGrid.buildNeighborLists(transforms, SEPARATION_RADIUS, skeletonNeighborLists);
         world.step(fixedDt); // rebuilds the spatial grid, ticks skeleton AI, drains damage/death events
         updateBolts(fixedDt);
         updateNecromancer(fixedDt);

@@ -5,6 +5,8 @@ export * from './core/component-store';
 export * from './core/event-queue';
 export * from './core/system';
 export * from './core/spatial-grid';
+export * from './core/vector';
+export * from './core/quaternion';
 export * from './core/tween';
 export * from './core/fixed-step';
 export * from './core/world';

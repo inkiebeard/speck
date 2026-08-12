@@ -9,8 +9,16 @@ import { defineConfig, devices } from '@playwright/test';
 //   meant to catch a pathological regression, not ordinary run-to-run noise.
 // - tests/noise/ — correctness tests for src/core/noise.ts (determinism,
 //   bounded output, poissonDiskSample2D's minimum-distance guarantee).
-// `npm run test:perf` / `test:noise` scope to one or the other; `npm test`
-// runs both.
+// - tests/vector/ — correctness tests for src/core/vector.ts and
+//   src/core/quaternion.ts (Vec3/Quat arithmetic, chaining, round-tripping);
+//   tests/perf/vector.spec.ts and tests/perf/quaternion.spec.ts cover their
+//   perf side, alongside the other tests/perf/ scaling benchmarks.
+// - tests/spatial-grid/ — correctness tests for
+//   SpatialGrid.buildNeighborLists (cross-checked against an O(n^2)
+//   brute-force reference); its perf side lives in
+//   tests/perf/spatial-grid.spec.ts alongside SpatialGrid's other benchmark.
+// `npm run test:perf` / `test:noise` / `test:vector` / `test:spatial-grid`
+// scope to one of the above; `npm test` runs all of them.
 export default defineConfig({
   testDir: './tests',
   fullyParallel: false, // perf numbers are noisy enough without also sharing a CPU across parallel workers

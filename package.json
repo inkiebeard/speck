@@ -1,6 +1,6 @@
 {
   "name": "@inkiebeard/speck",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "A tiny data-oriented game engine on top of Three.js & rapier3d",
   "license": "MIT",
   "type": "module",
@@ -30,7 +30,11 @@
     "pretest:perf": "npm run build",
     "test:perf": "playwright test tests/perf",
     "pretest:noise": "npm run build",
-    "test:noise": "playwright test tests/noise"
+    "test:noise": "playwright test tests/noise",
+    "pretest:vector": "npm run build",
+    "test:vector": "playwright test tests/vector tests/perf/vector.spec.ts tests/perf/quaternion.spec.ts",
+    "pretest:spatial-grid": "npm run build",
+    "test:spatial-grid": "playwright test tests/spatial-grid tests/perf/spatial-grid.spec.ts"
   },
   "peerDependencies": {
     "@dimforge/rapier3d-compat": ">=0.14.0",

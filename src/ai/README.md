@@ -17,9 +17,15 @@ as-is. See the top-level README for the full API description.
   use, rather than extending a fixed node-type enum that doesn't exist.
 - Build missing steering behaviors (flocking alignment, seek, flee, ...) as
   more plain functions following `separationCohesionSteer`'s pattern
-  (a `SpatialGrid` neighbor query in, a steering vector out) — call them
+  (a precomputed neighbor list in, a steering vector out) — call them
   from inside your own `action()` node rather than expecting them wired
   into `AiState`/`createAiSystem` automatically.
+- Call `SpatialGrid.buildNeighborLists` once per tick, for the whole
+  population, before ticking any entity's AI — not once per entity. It's
+  built for exactly that batched shape (see its own doc comment); calling
+  it per-entity would be no better than the old per-entity `queryRadius`
+  loop `separationCohesionSteer` used to do internally, which is the thing
+  `buildNeighborLists` exists to avoid.
 
 ## Trade-offs
 
