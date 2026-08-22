@@ -45,7 +45,7 @@ import {
   separationCohesionSteer,
   Vec3,
   Quat,
-} from '../../dist/speck.js';
+} from '../../dist/index.js';
 
 // --- Synthesized sound effects (no audio assets needed) ---------------------
 

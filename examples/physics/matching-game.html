@@ -9,14 +9,18 @@
     </style>
   </head>
   <body>
-    <!-- OrbitControls (three/examples/jsm) imports "three" as a bare specifier
-         internally, so the browser needs this map to resolve it. Points at the
-         same URL matching-game.js imports directly, so both resolve to one
-         module instance. -->
+    <!-- OrbitControls and the engine's GltfLoader (pulled in transitively via
+         the barrel import, even though this example never calls it) both
+         import three/examples/jsm modules as bare specifiers, which
+         themselves import "three" as a bare specifier — the browser needs
+         this map to resolve all of that, to the same URLs matching-game.js
+         imports directly so everything resolves to one module instance. -->
     <script type="importmap">
       {
         "imports": {
-          "three": "https://cdn.jsdelivr.net/npm/three@0.160.1/build/three.module.js"
+          "three": "https://cdn.jsdelivr.net/npm/three@0.160.1/build/three.module.js",
+          "three/examples/jsm/loaders/GLTFLoader.js": "https://cdn.jsdelivr.net/npm/three@0.160.1/examples/jsm/loaders/GLTFLoader.js",
+          "@dimforge/rapier3d-compat": "https://cdn.jsdelivr.net/npm/@dimforge/rapier3d-compat@0.14.0/rapier.es.js"
         }
       }
     </script>

@@ -1,6 +1,6 @@
 import { defineConfig, devices } from '@playwright/test';
 
-// Runs against the *built* dist/speck.js, the same artifact the examples
+// Runs against the *built* dist/index.js, the same artifact the examples
 // and any real consumer load — a source-level test would exercise different
 // (unminified, unbundled) code paths. Two kinds of specs share this config
 // and the harness at tests/perf/harness.html:

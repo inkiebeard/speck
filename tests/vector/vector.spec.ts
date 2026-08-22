@@ -3,7 +3,7 @@ import { gotoHarness } from '../perf/helpers';
 
 // Correctness tests for src/core/vector.ts, not perf — reuses the perf
 // harness only because it's the one place that already loads the *built*
-// dist/speck.js as a real ES module (see tests/perf/helpers.ts). `Vec3` is
+// dist/index.js as a real ES module (see tests/perf/helpers.ts). `Vec3` is
 // deliberately dependency-free (no `three`, see src/core/vector.ts's own
 // doc comment) so it can back headless/server-side simulation — these
 // checks are the contract that has to hold for that to be trustworthy:

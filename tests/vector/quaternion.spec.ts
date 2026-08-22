@@ -3,7 +3,7 @@ import { gotoHarness } from '../perf/helpers';
 
 // Correctness tests for src/core/quaternion.ts, not perf — reuses the perf
 // harness only because it's the one place that already loads the *built*
-// dist/speck.js as a real ES module (see tests/perf/helpers.ts). Like Vec3,
+// dist/index.js as a real ES module (see tests/perf/helpers.ts). Like Vec3,
 // Quat is deliberately dependency-free (no `three`) so rotation math that
 // only ever ends up as raw floats in TransformStore — or gets replayed
 // server-side against no renderer at all — doesn't need `three` loaded to

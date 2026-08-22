@@ -3,7 +3,7 @@ import { gotoHarness } from '../perf/helpers';
 
 // Correctness tests for src/core/noise.ts, not perf — reuses the perf
 // harness only because it's the one place that already loads the *built*
-// dist/speck.js as a real ES module (see tests/perf/helpers.ts). What's
+// dist/index.js as a real ES module (see tests/perf/helpers.ts). What's
 // checked here is the contract the rest of the engine (and logo-flight.js's
 // terrain/placement) actually depends on: bounded output, determinism
 // given a seed, and poissonDiskSample2D's minimum-distance guarantee.

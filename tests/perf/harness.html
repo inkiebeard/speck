@@ -2,26 +2,31 @@
 <!--
   Loads the built engine (and three, for the renderer benchmark) as real ES
   modules and hangs them off `window` for each spec's page.evaluate() to use.
-  three.module.js is the identical CDN URL vite.config.ts rewrites
-  dist/speck.js's own "three" import to (see the CDN map there) — the
-  browser's module cache resolves both to one instance, same trick the
-  examples rely on, so this doesn't create a second three.js.
+  dist/index.js imports "three" as a bare specifier (see vite.config.ts's
+  external list); the import map below resolves it to the same CDN URL this
+  file imports directly, so the browser's module cache gives both one
+  instance instead of two.
 -->
 <html>
   <head>
-    <!-- Same reason matching-game.html carries this: three/examples/jsm
-         modules (unused directly here, but dist/speck.js's own GLTFLoader
-         pulls one in) import "three" as a bare specifier internally, which
-         only the browser's own module resolution can satisfy via an import
-         map — bundling isn't in play for this harness. -->
+    <!-- dist/index.js's own GLTFLoader and rapier imports (unused directly
+         here, but pulled in transitively by the barrel) are also bare
+         specifiers — bundling isn't in play for this harness, so all three
+         need mapping. -->
     <script type="importmap">
-      { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.1/build/three.module.js" } }
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.160.1/build/three.module.js",
+          "three/examples/jsm/loaders/GLTFLoader.js": "https://cdn.jsdelivr.net/npm/three@0.160.1/examples/jsm/loaders/GLTFLoader.js",
+          "@dimforge/rapier3d-compat": "https://cdn.jsdelivr.net/npm/@dimforge/rapier3d-compat@0.14.0/rapier.es.js"
+        }
+      }
     </script>
   </head>
   <body>
     <script type="module">
       import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.1/build/three.module.js';
-      import * as Speck from '../../dist/speck.js';
+      import * as Speck from '../../dist/index.js';
       window.THREE = THREE;
       window.Speck = Speck;
       window.__ready = true;

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // A dependency-free static file server for the perf harness (tests/perf/) —
-// it needs to load dist/speck.js via a *relative* import (the same way the
+// it needs to load dist/index.js via a *relative* import (the same way the
 // examples and any real CDN-style consumer would), which requires an actual
 // http origin; file:// URLs can't resolve ES module specifiers the way the
 // browser needs here. No existing devDependency already provides this

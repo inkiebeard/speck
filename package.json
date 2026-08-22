@@ -4,13 +4,17 @@
   "description": "A tiny data-oriented game engine on top of Three.js & rapier3d",
   "license": "MIT",
   "type": "module",
-  "main": "./dist/speck.js",
-  "module": "./dist/speck.js",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/speck.js"
+      "import": "./dist/index.js"
+    },
+    "./*": {
+      "types": "./dist/*.d.ts",
+      "import": "./dist/*.js"
     }
   },
   "files": [
@@ -22,7 +26,7 @@
     "url": "https://inkiebeard.codes"
   },
   "scripts": {
-    "build": "tsc --emitDeclarationOnly && vite build && node scripts/write-speck-dts.mjs",
+    "build": "tsc --emitDeclarationOnly && vite build",
     "typecheck": "tsc --noEmit",
     "example": "npm run build && npx --yes serve .",
     "pretest": "npm run build",

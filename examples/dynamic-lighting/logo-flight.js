@@ -32,7 +32,7 @@ import {
   poissonDiskSample2D,
   createRng,
   Vec3,
-} from '../../dist/speck.js';
+} from '../../dist/index.js';
 
 // --- Flight tuning ---------------------------------------------------------
 

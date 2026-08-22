@@ -24,7 +24,7 @@ import {
   ParticleSystem,
   InputBuffer,
   Preloader,
-} from '../../dist/speck.js';
+} from '../../dist/index.js';
 
 /** Synthesizes a short two-tone chime — no audio asset needed. */
 function createChimeBuffer(context) {
