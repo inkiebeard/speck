@@ -1,6 +1,6 @@
 {
   "name": "@inkiebeard/speck",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A tiny data-oriented game engine on top of Three.js & rapier3d",
   "license": "MIT",
   "type": "module",
